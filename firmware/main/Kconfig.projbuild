@@ -1,0 +1,50 @@
+menu "OpenBee board pins"
+    comment "Defaults: Waveshare ESP32-S3-Touch-LCD-1.28 (verify for the -B variant)"
+
+    config OPENBEE_LCD_SCLK
+        int "LCD SPI SCLK"
+        default 10
+    config OPENBEE_LCD_MOSI
+        int "LCD SPI MOSI"
+        default 11
+    config OPENBEE_LCD_CS
+        int "LCD CS"
+        default 9
+    config OPENBEE_LCD_DC
+        int "LCD DC"
+        default 8
+    config OPENBEE_LCD_RST
+        int "LCD RST"
+        default 14
+    config OPENBEE_LCD_BL
+        int "LCD backlight"
+        default 2
+    config OPENBEE_TP_SDA
+        int "Touch I2C SDA"
+        default 6
+    config OPENBEE_TP_SCL
+        int "Touch I2C SCL"
+        default 7
+    config OPENBEE_TP_INT
+        int "Touch INT"
+        default 5
+    config OPENBEE_TP_RST
+        int "Touch RST"
+        default 13
+    config OPENBEE_BAT_ADC_GPIO
+        int "Battery ADC GPIO (ADC1)"
+        default 1
+    config OPENBEE_BAT_DIVIDER_X100
+        int "Battery voltage divider ratio x100"
+        default 300
+        help
+            Battery voltage = ADC pin voltage * ratio / 100. Calibrate against a multimeter.
+endmenu
+
+menu "OpenBee"
+    config OPENBEE_DEMO_MODE
+        bool "Start in demo mode (canned navigation data, no phone needed)"
+        default n
+        help
+            Demo mode can also be toggled at runtime by long-pressing the Status screen.
+endmenu

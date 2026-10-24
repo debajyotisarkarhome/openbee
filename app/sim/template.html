@@ -1,0 +1,194 @@
+<title>OpenBee Display Simulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Montserrat:wght@500&display=swap">
+<style>
+  /* Layout: instrument on the left (the hero), workbench controls and live readouts on the right; stacks on phones. */
+  :root {
+    --bg: #EEF1F4;
+    --surface: #FFFFFF;
+    --line: #D8DEE5;
+    --line-strong: #B7C0CB;
+    --fg: #12161B;
+    --muted: #5B6572;
+    --accent: #007C9C;
+    --accent-ink: #FFFFFF;
+    --warn: #B45309;
+    --bad: #B91C1C;
+    --ok: #15803D;
+    --font-display: "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
+    --font-body: Barlow, "Segoe UI", Roboto, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0D1013; --surface: #151A1F; --line: #252C34; --line-strong: #3A434E; --fg: #E7EBEF; --muted: #8E98A5;
+      --accent: #2BD4F5; --accent-ink: #00161C; --warn: #F59E0B; --bad: #F87171; --ok: #4ADE80; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0D1013; --surface: #151A1F; --line: #252C34; --line-strong: #3A434E; --fg: #E7EBEF; --muted: #8E98A5;
+    --accent: #2BD4F5; --accent-ink: #00161C; --warn: #F59E0B; --bad: #F87171; --ok: #4ADE80; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 28px 40px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 28px; }
+  header { display: grid; gap: 6px; }
+  h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(30px, 5vw, 44px); line-height: 1.05; margin: 0; letter-spacing: 0.01em; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 64ch; margin: 0; }
+  .eyebrow { font-family: var(--font-display); font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; font-size: 13px; color: var(--accent); }
+
+  .layout { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 32px; align-items: start; }
+  @media (max-width: 860px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+  /* The instrument */
+  .instrument { display: grid; justify-items: center; gap: 16px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); }
+  @media (max-width: 860px) { .instrument { position: static; } }
+  .bezel {
+    width: min(392px, 86vw); aspect-ratio: 1; max-width: 100%; border-radius: 50%; padding: 26px;
+    background:
+      radial-gradient(circle at 50% 50%, #0a0b0d 62%, transparent 62.5%),
+      conic-gradient(from 200deg, #6b737c, #c9cfd5, #5d646c, #aeb5bc, #50565d, #c3c9cf, #6b737c);
+    box-shadow: 0 24px 50px -24px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.18);
+    display: grid; place-items: center;
+  }
+  .bezel canvas { width: 100%; aspect-ratio: 1; border-radius: 50%; display: block; touch-action: pan-y; cursor: grab; background: #000; }
+  .bezel canvas:focus-visible { outline: 3px solid var(--accent); outline-offset: 6px; }
+  .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: var(--surface); }
+  .tabs button { border: 0; background: transparent; color: var(--muted); font: 600 14px var(--font-body); padding: 6px 16px; border-radius: 999px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+  .hint { color: var(--muted); font-size: 13px; margin: 0; text-align: center; max-width: 36ch; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 18px; height: 6px; border-radius: 3px; display: inline-block; }
+
+  /* Workbench */
+  .bench { display: grid; gap: 18px; min-width: 0; }
+  section.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 14px; min-width: 0; }
+  h2 { font-family: var(--font-display); font-weight: 600; font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin: 0; }
+  .routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+  .route { text-align: left; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 10px; padding: 10px 12px; cursor: pointer; display: grid; gap: 2px; font-family: var(--font-body); }
+  .route[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .route-name { font-weight: 600; font-size: 15px; }
+  .route-meta { color: var(--muted); font-size: 13px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .btn { border: 1px solid var(--line-strong); background: transparent; color: var(--fg); font: 600 14px var(--font-body); padding: 8px 14px; border-radius: 9px; cursor: pointer; }
+  .btn:hover { border-color: var(--fg); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); min-width: 104px; }
+  .btn[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg { display: inline-flex; gap: 4px; margin-left: auto; }
+  .seg .btn { padding: 8px 10px; min-width: 44px; }
+
+  .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 18px; }
+  .kv { display: grid; gap: 1px; min-width: 0; }
+  .kv dt { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--font-display); font-weight: 600; }
+  .kv dd { margin: 0; font-weight: 600; font-size: 17px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .kv.wide { grid-column: 1 / -1; }
+  dl { margin: 0; }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 14px; background: var(--line); }
+  .pill[data-state="1"] { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .pill[data-state="2"] { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  .pill[data-state="3"] { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .pill[data-state="4"] { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+  .progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; }
+  #overview { width: 100%; height: 220px; display: block; }
+  .mono { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+  .hex { font-family: var(--font-mono); font-size: 12.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: nowrap; }
+  footer { color: var(--muted); font-size: 13px; max-width: 72ch; }
+  footer code { font-family: var(--font-mono); font-size: 12.5px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">OpenBee · handlebar navigator</span>
+    <h1>Display simulator</h1>
+    <p class="lede">A virtual ride on the 1.28″ round display. The phone plans the route, sends the streets around you and
+      each navigation update over the real Bluetooth protocol, and the screen draws them the way the firmware does.
+      Pick a road, then try a wrong turn or a dropped GPS signal.</p>
+  </header>
+
+  <div class="layout">
+    <div class="instrument">
+      <div class="bezel"><canvas id="display" width="240" height="240" tabindex="0" aria-label="Simulated OpenBee display. Swipe or use arrow keys to change view."></canvas></div>
+      <div class="tabs" role="group" aria-label="Display view">
+        <button type="button" data-tile="0" aria-pressed="true">Nav</button>
+        <button type="button" data-tile="1" aria-pressed="false">Trip</button>
+        <button type="button" data-tile="2" aria-pressed="false">Status</button>
+      </div>
+      <p class="hint">Swipe the screen sideways like the touchscreen. Tapping Trip or Status returns to Nav.</p>
+      <div class="legend" aria-label="Map key">
+        <span><i style="background:#3D8BFF"></i>Your route</span>
+        <span><i style="background:#3E4754"></i>Other streets</span>
+        <span><i style="background:#FF8A00"></i>Medium bend</span>
+        <span><i style="background:#FF2D2D"></i>Sharp bend</span>
+      </div>
+    </div>
+
+    <div class="bench">
+      <section class="panel">
+        <h2>Road</h2>
+        <div class="routes" id="routes"></div>
+        <div class="row">
+          <button type="button" class="btn primary" id="play">Pause</button>
+          <div class="seg" role="group" aria-label="Simulation speed">
+            <button type="button" class="btn" data-speed="1">1×</button>
+            <button type="button" class="btn" data-speed="2">2×</button>
+            <button type="button" class="btn" data-speed="4">4×</button>
+          </div>
+        </div>
+        <div class="progress" aria-hidden="true"><div id="st-progress"></div></div>
+      </section>
+
+      <section class="panel">
+        <h2>Make something happen</h2>
+        <div class="row">
+          <button type="button" class="btn" id="ev-detour">Take a wrong turn</button>
+          <button type="button" class="btn" id="ev-gps">Lose GPS for 12 s</button>
+          <button type="button" class="btn" id="ev-call">Incoming call</button>
+          <button type="button" class="btn" id="ev-msg">Message</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Phone app</h2>
+        <dl class="readout">
+          <div class="kv"><dt>Status</dt><dd><span class="pill" id="st-state">—</span></dd></div>
+          <div class="kv"><dt>Next turn in</dt><dd id="st-dist">—</dd></div>
+          <div class="kv"><dt>Speed</dt><dd id="st-speed">—</dd></div>
+          <div class="kv"><dt>Off route by</dt><dd id="st-offset">—</dd></div>
+          <div class="kv"><dt>Left</dt><dd id="st-left">—</dd></div>
+          <div class="kv wide"><dt>Instruction</dt><dd id="st-next">—</dd></div>
+        </dl>
+        <canvas id="overview" aria-label="Route overview with rider position"></canvas>
+      </section>
+
+      <section class="panel">
+        <h2>Bluetooth link</h2>
+        <dl class="readout">
+          <div class="kv"><dt>Throughput</dt><dd id="bt-rate">—</dd></div>
+          <div class="kv"><dt>Last NAV frame</dt><dd id="bt-size">—</dd></div>
+          <div class="kv wide"><dt>Frames sent</dt><dd class="mono" id="bt-counts">—</dd></div>
+        </dl>
+        <div class="hex" id="bt-hex" aria-label="First bytes of the last NAV frame">—</div>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    Runs the project's own <code>app/src/core</code> code (nav engine, road-shape extraction, session, protocol v1).
+    The screen is a canvas port of <code>firmware/components/ui/ui.c</code>, so layout and colors match the firmware;
+    the real device renders with LVGL and its own fonts, so expect small differences in text rendering.
+    The side streets here are generated for the demo roads; the app fetches real ones from OpenStreetMap.
+  </footer>
+</div>
+
+<script>/*BUNDLE*/</script>

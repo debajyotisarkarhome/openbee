@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "OpenBee",
+    "slug": "openbee",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.openbee.app",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "bluetooth-central"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.openbee.app",
+      "permissions": [
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "OpenBee uses your location in the background to send turn-by-turn directions to your handlebar display while you ride.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": true,
+          "modes": [
+            "central"
+          ],
+          "bluetoothAlwaysPermission": "OpenBee connects to your handlebar display over Bluetooth."
+        }
+      ],
+      "@maplibre/maplibre-react-native"
+    ],
+    "scheme": "openbee",
+    "backgroundColor": "#0B0D10"
+  }
+}

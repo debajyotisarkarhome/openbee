@@ -1,0 +1,5 @@
+type=DEV_STATUS
+batt_pct=84
+batt_mv=4012
+charging=1
+fw_ver=1

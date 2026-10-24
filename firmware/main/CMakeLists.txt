@@ -1,0 +1,5 @@
+idf_component_register(
+    SRCS "main.c" "demo.c"
+    INCLUDE_DIRS "."
+    REQUIRES board ble_link proto ui nvs_flash esp_hw_support
+)

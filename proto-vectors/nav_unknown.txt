@@ -1,0 +1,12 @@
+type=NAV
+maneuver=1
+exit=0
+dist_m=65535
+curve_dir=0
+curve_class=0
+curve_dist_m=0
+maneuver_idx=255
+anchor_id=0
+pose=0,0,0
+n=0
+street=

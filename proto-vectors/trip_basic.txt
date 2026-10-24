@@ -1,0 +1,8 @@
+type=TRIP
+speed_kmh=62
+limit_kmh=60
+eta_epoch=1793001234
+remaining_m=48210
+phone_batt=77
+now_epoch=1792998000
+tz_offset_min=330

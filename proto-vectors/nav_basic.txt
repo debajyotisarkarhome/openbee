@@ -1,0 +1,17 @@
+type=NAV
+maneuver=3
+exit=0
+dist_m=230
+curve_dir=1
+curve_class=2
+curve_dist_m=120
+maneuver_idx=3
+anchor_id=0
+pose=0,0,0
+n=5
+p0=0,0,0
+p1=40,800,1
+p2=300,1500,2
+p3=250,2300,0
+p4=-900,2350,3
+street=MG Road

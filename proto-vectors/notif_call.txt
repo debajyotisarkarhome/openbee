@@ -1,0 +1,5 @@
+type=NOTIF
+kind=1
+app=Phone
+title=Mom
+body=Incoming call
