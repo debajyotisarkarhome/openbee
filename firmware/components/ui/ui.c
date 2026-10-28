@@ -930,7 +930,8 @@ static lv_obj_t *media_button(lv_obj_t *t, int32_t cx, int32_t cy, int32_t d, co
     lv_obj_set_style_border_width(b, 2, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(0x0E2A36), LV_STATE_PRESSED);
     lv_obj_set_style_border_color(b, C_ACCENT, LV_STATE_PRESSED);
-    lv_obj_add_event_cb(b, media_button_cb, LV_EVENT_CLICKED, (void *)(intptr_t)cmd);
+    // CLICKED also fires on release after a long press; repeating buttons use SHORT_CLICKED so a hold isn't N+1 steps.
+    lv_obj_add_event_cb(b, media_button_cb, repeat ? LV_EVENT_SHORT_CLICKED : LV_EVENT_CLICKED, (void *)(intptr_t)cmd);
     if (repeat) {
         lv_obj_add_event_cb(b, media_button_cb, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)cmd);
     }
@@ -984,8 +985,9 @@ static void build_media(lv_obj_t *t)
 static void apply_media(const media_msg_t *m)
 {
     bool active = m->state == MEDIA_PLAYING || m->state == MEDIA_PAUSED; // anything else (incl. unknown) = none
-    lv_label_set_text(s.media_title, active ? m->title : "Nothing playing");
-    lv_label_set_text(s.media_artist, active ? m->artist : "");
+    bool titled = active && m->title[0]; // a session with no metadata yet reads as nothing playing
+    lv_label_set_text(s.media_title, titled ? m->title : "Nothing playing");
+    lv_label_set_text(s.media_artist, titled ? m->artist : "");
     lv_arc_set_value(s.media_ring, active && m->volume_pct != PROTO_UNKNOWN_VOLUME ? (m->volume_pct > 100 ? 100 : m->volume_pct) : 0);
     lv_label_set_text(s.media_play_lbl, m->state == MEDIA_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 }
@@ -1050,7 +1052,9 @@ static void refresh_banner(void)
     refresh_placeholder();
     const char *txt = NULL;
     uint32_t color = 0x333333;
-    if (s.connected || s.demo) {
+    // The banner sits over the Media page's prev/play/next row, so it only shows elsewhere.
+    bool on_media = lv_tileview_get_tile_active(s.tv) == s.tile_media;
+    if ((s.connected || s.demo) && !on_media) {
         switch (s.nav_state) {
         case NAV_REROUTING: txt = "Rerouting..."; color = 0xD97706; break;
         case NAV_GPS_LOST: txt = "GPS lost"; color = 0xB91C1C; break;
@@ -1065,6 +1069,13 @@ static void refresh_banner(void)
     } else {
         lv_obj_set_hidden(s.banner, true);
     }
+}
+
+// Runs in the LVGL task (port lock held).
+static void tile_changed(lv_event_t *e)
+{
+    (void)e;
+    refresh_banner();
 }
 
 static void refresh_status(void)
@@ -1327,6 +1338,7 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     bright_set(brightness, false); // display only: unchanged, so no callback
     s.on_brightness = on_brightness;
     build_overlays();
+    lv_obj_add_event_cb(s.tv, tile_changed, LV_EVENT_VALUE_CHANGED, NULL);
     lv_timer_create(clock_tick, 1000, NULL);
     lv_timer_create(anim_tick, ANIM_PERIOD_MS, NULL);
 

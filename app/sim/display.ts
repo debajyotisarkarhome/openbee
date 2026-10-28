@@ -461,8 +461,9 @@ export class DisplayRenderer {
       c.stroke();
     }
 
-    this.text(this.ellipsize(active ? m.title : 'Nothing playing', 20, MEDIA_TITLE_W), CX, MEDIA_TITLE_Y + LINE_H_20 / 2, 20, C_TEXT);
-    if (active && m.artist) {
+    const titled = active && m.title !== ''; // no metadata yet reads as nothing playing (as in ui.c)
+    this.text(this.ellipsize(titled ? m.title : 'Nothing playing', 20, MEDIA_TITLE_W), CX, MEDIA_TITLE_Y + LINE_H_20 / 2, 20, C_TEXT);
+    if (titled && m.artist) {
       this.text(this.ellipsize(m.artist, 14, MEDIA_ARTIST_W), CX, MEDIA_ARTIST_Y + LINE_H_14 / 2, 14, C_DIM);
     }
 
@@ -604,6 +605,7 @@ export class DisplayRenderer {
     // "No phone" / "Pick a destination" are shown by the nav placeholder instead (mirrors refresh_banner in ui.c).
     let txt: string | null = null, color = '#3A3F47';
     if (!st.connected) return;
+    if (Math.round(this.tile) === TILE_MEDIA) return; // would cover prev/play/next (as in ui.c)
     if (st.navState === NavState.REROUTING) [txt, color] = ['Rerouting...', '#D97706'];
     else if (st.navState === NavState.GPS_LOST) [txt, color] = ['GPS lost', '#B91C1C'];
     else if (st.navState === NavState.ARRIVED) [txt, color] = ['Arrived', '#15803D'];
