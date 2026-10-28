@@ -16,7 +16,9 @@ export enum MsgType {
   NOTIF = 0x03,
   STATE = 0x04,
   ROADS = 0x05,
+  MEDIA = 0x06,
   DEV_STATUS = 0x81,
+  MEDIA_CMD = 0x82,
 }
 
 export enum Maneuver {
@@ -111,6 +113,20 @@ export interface NotifMsg {
   app: string;
   title: string;
   body: string;
+}
+
+export const MEDIA_TITLE_MAX = 96;
+export const MEDIA_ARTIST_MAX = 64;
+
+export enum MediaState { NONE = 0, PLAYING = 1, PAUSED = 2 }
+export enum MediaCmd { TOGGLE = 0, NEXT = 1, PREV = 2, VOL_UP = 3, VOL_DOWN = 4 }
+
+export interface MediaMsg {
+  state: MediaState;
+  /** 0–100, null = unknown. */
+  volumePct: number | null;
+  title: string;
+  artist: string;
 }
 
 export interface DevStatusMsg {
@@ -285,6 +301,19 @@ export function encodeState(s: NavState): Uint8Array {
   return frame(MsgType.STATE, Uint8Array.of(s));
 }
 
+export function encodeMedia(m: MediaMsg): Uint8Array {
+  const w = new Writer();
+  w.u8(m.state);
+  w.u8(m.volumePct == null ? 0xff : clamp(m.volumePct, 0, 100));
+  w.str(utf8Truncate(m.title, MEDIA_TITLE_MAX));
+  w.str(utf8Truncate(m.artist, MEDIA_ARTIST_MAX));
+  return frame(MsgType.MEDIA, w.bytes());
+}
+
+export function encodeMediaCmd(cmd: MediaCmd): Uint8Array {
+  return frame(MsgType.MEDIA_CMD, Uint8Array.of(cmd));
+}
+
 export function encodeDevStatus(m: DevStatusMsg): Uint8Array {
   const w = new Writer();
   w.u8(clamp(m.battPct, 0, 100));
@@ -300,7 +329,9 @@ export type Decoded =
   | { type: MsgType.NOTIF; msg: NotifMsg }
   | { type: MsgType.STATE; msg: NavState }
   | { type: MsgType.ROADS; msg: RoadsMsg }
-  | { type: MsgType.DEV_STATUS; msg: DevStatusMsg };
+  | { type: MsgType.MEDIA; msg: MediaMsg }
+  | { type: MsgType.DEV_STATUS; msg: DevStatusMsg }
+  | { type: MsgType.MEDIA_CMD; msg: { cmd: MediaCmd } };
 
 export function decode(f: Uint8Array): Decoded {
   if (f.length < 4 || f[0] !== PROTO_VER) throw new Error('bad header');
@@ -351,6 +382,12 @@ export function decode(f: Uint8Array): Decoded {
       }
       return { type: MsgType.ROADS, msg: { anchorId, part, parts, roads } };
     }
+    case MsgType.MEDIA: {
+      const state = r.u8(), vol = r.u8(), title = r.str(), artist = r.str();
+      return { type: MsgType.MEDIA, msg: { state, volumePct: vol === 0xff ? null : vol, title, artist } };
+    }
+    case MsgType.MEDIA_CMD:
+      return { type: MsgType.MEDIA_CMD, msg: { cmd: r.u8() } };
     case MsgType.DEV_STATUS: {
       const battPct = r.u8(), battMv = r.u16(), charging = r.u8() !== 0, fwVer = r.u8();
       return { type: MsgType.DEV_STATUS, msg: { battPct, battMv, charging, fwVer } };
@@ -391,6 +428,13 @@ export function dump(f: Uint8Array): string {
     case MsgType.ROADS:
       L.push('type=ROADS', `anchor_id=${d.msg.anchorId}`, `part=${d.msg.part}/${d.msg.parts}`, `n=${d.msg.roads.length}`);
       d.msg.roads.forEach((rd, i) => L.push(`r${i}=${rd.map((p) => `${p.x},${p.y}`).join(' ')}`));
+      break;
+    case MsgType.MEDIA:
+      L.push('type=MEDIA', `state=${d.msg.state}`, `volume_pct=${d.msg.volumePct ?? 255}`,
+        `title=${d.msg.title}`, `artist=${d.msg.artist}`);
+      break;
+    case MsgType.MEDIA_CMD:
+      L.push('type=MEDIA_CMD', `cmd=${d.msg.cmd}`);
       break;
     case MsgType.DEV_STATUS:
       L.push('type=DEV_STATUS', `batt_pct=${d.msg.battPct}`, `batt_mv=${d.msg.battMv}`,

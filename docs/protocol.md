@@ -34,7 +34,9 @@ match the bytes received.
 | `0x03` | `NOTIF`      | phone → device | on event                              |
 | `0x04` | `STATE`      | phone → device | on change, plus once on connect       |
 | `0x05` | `ROADS`      | phone → device | per anchor: when the rider is 300 m from the last one, plus on connect |
+| `0x06` | `MEDIA`      | phone → device | on change, plus once on connect       |
 | `0x81` | `DEV_STATUS` | device → phone | every 10 s, plus once on subscribe    |
+| `0x82` | `MEDIA_CMD`  | device → phone | on button press                       |
 
 ## `NAV` (0x01)
 
@@ -152,6 +154,17 @@ when the link is congested; it drops stale `NAV` frames instead.
 |------|---------|-------------------------------------------------------------|
 | 1    | `state` | 0 idle, 1 navigating, 2 rerouting, 3 arrived, 4 gps_lost    |
 
+## `MEDIA` (0x06)
+
+| Size | Field        | Notes                                           |
+|------|--------------|-------------------------------------------------|
+| 1    | `state`      | 0 none (no active session), 1 playing, 2 paused |
+| 1    | `volume_pct` | 0–100, `0xFF` = unknown                         |
+| 1+…  | `title`      | len u8 + bytes (≤ 96)                           |
+| 1+…  | `artist`     | len u8 + bytes (≤ 64)                           |
+
+Strings are truncated by the sender on a UTF-8 code-point boundary.
+
 ## `DEV_STATUS` (0x81)
 
 | Size | Field      | Notes          |
@@ -160,6 +173,12 @@ when the link is congested; it drops stale `NAV` frames instead.
 | 2    | `batt_mv`  | uint16         |
 | 1    | `charging` | 0/1            |
 | 1    | `fw_ver`   | firmware build |
+
+## `MEDIA_CMD` (0x82)
+
+| Size | Field | Notes                                                               |
+|------|-------|---------------------------------------------------------------------|
+| 1    | `cmd` | 0 toggle play/pause, 1 next, 2 previous, 3 volume up, 4 volume down |
 
 ## Test vectors
 

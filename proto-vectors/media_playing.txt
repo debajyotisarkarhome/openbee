@@ -1,0 +1,5 @@
+type=MEDIA
+state=1
+volume_pct=60
+title=Für Elise — Remastered
+artist=Beethoven

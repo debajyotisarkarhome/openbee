@@ -2,8 +2,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CurveClass, Maneuver, NavState, NotifKind, ShapePoint,
-  dump, encodeDevStatus, encodeNav, encodeNotif, encodeRoads, encodeState, encodeTrip,
+  CurveClass, Maneuver, MediaCmd, MediaState, NavState, NotifKind, ShapePoint,
+  dump, encodeDevStatus, encodeMedia, encodeMediaCmd, encodeNav, encodeNotif, encodeRoads, encodeState, encodeTrip,
 } from '../src/core/proto';
 
 const out = join(__dirname, '..', '..', 'proto-vectors');
@@ -48,6 +48,9 @@ const vectors: Record<string, Uint8Array> = {
   }),
   notif_call: encodeNotif({ kind: NotifKind.CALL, app: 'Phone', title: 'Mom', body: 'Incoming call' }),
   state_rerouting: encodeState(NavState.REROUTING),
+  media_playing: encodeMedia({ state: MediaState.PLAYING, volumePct: 60, title: 'Für Elise — Remastered', artist: 'Beethoven' }),
+  media_none: encodeMedia({ state: MediaState.NONE, volumePct: null, title: '', artist: '' }),
+  media_cmd_next: encodeMediaCmd(MediaCmd.NEXT),
   dev_status: encodeDevStatus({ battPct: 84, battMv: 4012, charging: true, fwVer: 1 }),
 };
 

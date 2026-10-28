@@ -1,0 +1,2 @@
+type=MEDIA_CMD
+cmd=1

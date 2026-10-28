@@ -1,8 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CurveClass, Maneuver, MAX_PAYLOAD, MsgType, NotifKind,
-  decode, dump, encodeNav, encodeNotif, encodeTrip, utf8Truncate,
+  CurveClass, Maneuver, MAX_PAYLOAD, MediaCmd, MediaState, MsgType, NotifKind,
+  decode, dump, encodeMedia, encodeMediaCmd, encodeNav, encodeNotif, encodeTrip, utf8Truncate,
 } from '../proto';
 
 const VEC = join(__dirname, '..', '..', '..', '..', 'proto-vectors');
@@ -53,6 +53,41 @@ describe('proto', () => {
     const f = encodeTrip({ speedKmh: 300, limitKmh: 50, etaEpoch: 0x01020304, remainingM: 5, phoneBatt: null, nowEpoch: 0, tzOffsetMin: -60 });
     expect(Array.from(f.subarray(4, 10))).toEqual([255, 50, 4, 3, 2, 1]);
     expect(Array.from(f.subarray(f.length - 2))).toEqual([0xc4, 0xff]);
+  });
+
+  it('MEDIA round-trips', () => {
+    const msg = { state: MediaState.PLAYING, volumePct: 42, title: 'Bohemian Rhapsody', artist: 'Queen' };
+    const d = decode(encodeMedia(msg));
+    expect(d.type).toBe(MsgType.MEDIA);
+    expect(d.msg).toEqual(msg);
+  });
+
+  it('MEDIA unknown volume', () => {
+    const f = encodeMedia({ state: MediaState.PAUSED, volumePct: null, title: 'a', artist: 'b' });
+    expect(f[5]).toBe(0xff);
+    const d = decode(f);
+    if (d.type !== MsgType.MEDIA) throw new Error();
+    expect(d.msg.volumePct).toBeNull();
+  });
+
+  it('MEDIA truncates on code points', () => {
+    const title = 'é'.repeat(40) + '日'.repeat(10);
+    const f = encodeMedia({ state: MediaState.PLAYING, volumePct: 1, title, artist: '' });
+    expect(f[6]).toBe(95);
+    const d = decode(f);
+    if (d.type !== MsgType.MEDIA) throw new Error();
+    expect(d.msg.title).not.toContain('�');
+    expect(title.startsWith(d.msg.title)).toBe(true);
+  });
+
+  it('MEDIA_CMD round-trips', () => {
+    for (const c of [MediaCmd.TOGGLE, MediaCmd.NEXT, MediaCmd.PREV, MediaCmd.VOL_UP, MediaCmd.VOL_DOWN]) {
+      const f = encodeMediaCmd(c);
+      expect(f.length).toBe(5);
+      const d = decode(f);
+      if (d.type !== MsgType.MEDIA_CMD) throw new Error();
+      expect(d.msg.cmd).toBe(c);
+    }
   });
 
   it('rejects malformed frames', () => {

@@ -1,0 +1,5 @@
+type=MEDIA
+state=0
+volume_pct=255
+title=
+artist=
