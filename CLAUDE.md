@@ -153,7 +153,10 @@ or `CONFIG_OPENBEE_DEMO_MODE`) runs standalone with no phone.
 
 ## Known gaps to keep in mind
 
-Never run on real hardware yet — display rotation (set in `components/board/board.c`) and touch axes
-are unverified. Notification forwarding (Android `NotificationListenerService` / iOS ANCS) is
-specified in the protocol and drawn by the UI but has no phone-side implementation. Street names are
+First flashed to real hardware on 2026-10-28: the device boots and iPhone media control (AMS) works.
+Display rotation (set in `components/board/board.c`) and touch axes haven't been checked on their own
+yet, and the Android media module (`app/modules/openbee-media`) has never been compiled. Notification
+forwarding (iOS ANCS, Android notifications) is specified in the protocol and drawn by the UI but has
+no implementation. Android's `NotificationListenerService` exists only to authorise
+`getActiveSessions`, and forwards nothing. Street names are
 Latin-script only (Montserrat fonts). The BLE link is unencrypted with no bonding.
