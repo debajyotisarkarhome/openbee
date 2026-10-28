@@ -1,4 +1,5 @@
-// BLE central for the OpenBee device: scan, connect, auto-reconnect, serialized writes, DEV_STATUS notifications.
+// BLE central for the OpenBee device: scan, connect, auto-reconnect, serialized writes, DEV_STATUS and
+// MEDIA_CMD notifications.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { BleManager, Device, State, Subscription } from 'react-native-ble-plx';
@@ -30,6 +31,8 @@ export class DeviceLink {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private wantConnected = false;
   onConnected: () => void = () => {};
+  /** A MEDIA_CMD notification from the display (raw byte; the receiver validates it). */
+  onMediaCmd: (cmd: number) => void = () => {};
 
   constructor() {
     this.manager.onStateChange((s) => {
@@ -102,6 +105,7 @@ export class DeviceLink {
           try {
             const msg = decode(fromBase64(c.value));
             if (msg.type === MsgType.DEV_STATUS) this.set({ devStatus: msg.msg });
+            else if (msg.type === MsgType.MEDIA_CMD) this.onMediaCmd(msg.msg.cmd);
           } catch {
             // ignore malformed notifications
           }

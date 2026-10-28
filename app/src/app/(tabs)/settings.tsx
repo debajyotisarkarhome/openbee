@@ -1,5 +1,7 @@
+import { useSyncExternalStore } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { mediaPermission } from '../../services/media';
 import { SIM_SPEED_CHOICES, settings } from '../../services/settings';
 import { Card, Divider, Row, SectionLabel, SegmentedControl, ToggleRow } from '../../ui/components';
 import { BOTTOM_BAR_CLEARANCE } from '../../ui/BottomBar';
@@ -8,6 +10,7 @@ import { colors, space, speedLabel, toSpeed } from '../../ui/theme';
 
 export default function SettingsScreen() {
   const s = useSettings();
+  const media = useSyncExternalStore(mediaPermission.subscribe, mediaPermission.getView);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -71,6 +74,20 @@ export default function SettingsScreen() {
           />
         </Card>
       </View>
+
+      {media.supported ? (
+        <View>
+          <SectionLabel>Media</SectionLabel>
+          <Card>
+            <Row
+              icon="musical-notes-outline"
+              title="Media controls on display"
+              subtitle={media.granted ? 'Allowed' : 'Tap to allow notification access'}
+              onPress={() => mediaPermission.open()}
+            />
+          </Card>
+        </View>
+      ) : null}
 
       <View>
         <SectionLabel>About</SectionLabel>

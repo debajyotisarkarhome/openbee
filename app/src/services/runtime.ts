@@ -1,4 +1,5 @@
-// App-wide singletons: BLE link + nav session, wired to GPS (background), the ride simulator and battery.
+// App-wide singletons: BLE link + nav session, wired to GPS (background), the ride simulator, battery
+// and (Android) phone media.
 // Imported once from the root layout so the background location task is defined at startup.
 import * as Battery from 'expo-battery';
 import * as Location from 'expo-location';
@@ -10,6 +11,7 @@ import { Route } from '../core/route';
 import { NavSession } from '../core/session';
 import { simulateRide } from '../core/simulator';
 import { DeviceLink } from './ble';
+import { startMediaRelay } from './media';
 import { fetchRoute } from './routing';
 import { fetchStreets, prefetchAlongRoute } from './streets';
 
@@ -29,7 +31,12 @@ export const session = new NavSession({
   phoneBatteryPct: () => batteryPct,
   tzOffsetMin: () => -new Date().getTimezoneOffset(),
 });
-link.onConnected = () => session.onDeviceConnected();
+const mediaRelay = startMediaRelay(link);
+link.onConnected = () => {
+  session.onDeviceConnected();
+  mediaRelay?.onDeviceConnected();
+};
+link.onMediaCmd = (cmd) => mediaRelay?.onDeviceCommand(cmd);
 
 function toFix(l: Location.LocationObject): Fix {
   return {
