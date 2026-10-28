@@ -8,10 +8,15 @@ CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 
-# BLE: NimBLE peripheral only
+# BLE: NimBLE peripheral, plus a GATT client toward the iPhone's Apple Media Service.
+# ESP-IDF 5.5 gates the GATT client (BT_NIMBLE_GATT_CLIENT, and the discovery/write procedures in
+# esp_nimble_cfg.h) on ROLE_CENTRAL, so it is on; the device still never scans or initiates connections.
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
+# Bonds survive reboots so a paired iPhone isn't asked again
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1

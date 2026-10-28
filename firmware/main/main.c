@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "ams.h"
 #include "ble_link.h"
 #include "board.h"
 #include "demo.h"
@@ -38,6 +39,9 @@ static atomic_bool s_connected_changed;
 static atomic_uint s_media_cmd; // media_cmd_t + 1; 0 = none
 static atomic_uint s_brightness;
 static atomic_uint s_brightness_changed_tick; // 0 = saved
+static portMUX_TYPE s_ams_media_lock = portMUX_INITIALIZER_UNLOCKED;
+static media_msg_t s_ams_media; // guarded by s_ams_media_lock
+static atomic_bool s_ams_media_changed;
 
 static void on_rx(const uint8_t *data, size_t len)
 {
@@ -66,9 +70,26 @@ static void on_media_cmd(uint8_t cmd)
     atomic_store(&s_media_cmd, (unsigned)cmd + 1); // inside the LVGL task: defer to the main loop
 }
 
-/** Send a media command from the device's buttons to whichever source is playing. Task 5 adds the AMS branch. */
+static void ams_media_cb(const media_msg_t *m)
+{
+    // NimBLE host task: copy and flag; the main loop applies it to the UI.
+    portENTER_CRITICAL(&s_ams_media_lock);
+    s_ams_media = *m;
+    portEXIT_CRITICAL(&s_ams_media_lock);
+    atomic_store(&s_ams_media_changed, true);
+}
+
+/** Send a media command from the device's buttons to whichever source is playing: the iPhone's AMS when
+ *  subscribed, otherwise the phone app (Android relays it to its media session). */
 static void media_route(uint8_t cmd)
 {
+    if (ams_active()) {
+        esp_err_t err = ams_send(cmd);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "media cmd %u not sent to AMS: %s", cmd, esp_err_to_name(err));
+        }
+        return;
+    }
     uint8_t buf[8];
     size_t n = proto_encode_media_cmd(cmd, buf);
     esp_err_t err = ble_link_send(buf, n);
@@ -172,6 +193,7 @@ void app_main(void)
     char name[16];
     snprintf(name, sizeof name, "OpenBee-%02X%02X", mac[4], mac[5]);
     ui_init(disp, name, on_demo_toggle, brightness, on_brightness, on_media_cmd);
+    ams_init(ams_media_cb);
     ESP_ERROR_CHECK(ble_link_init(on_rx, on_conn));
 
 #ifdef CONFIG_OPENBEE_DEMO_MODE
@@ -214,6 +236,14 @@ void app_main(void)
                 static proto_msg_t none = {.type = MSG_MEDIA, .u.media = {.state = MEDIA_NONE, .volume_pct = PROTO_UNKNOWN_VOLUME}};
                 ui_apply(&none);
             }
+        }
+
+        if (atomic_exchange(&s_ams_media_changed, false)) {
+            static proto_msg_t ams_msg = {.type = MSG_MEDIA}; // static: proto_msg_t is ~750 bytes
+            portENTER_CRITICAL(&s_ams_media_lock);
+            ams_msg.u.media = s_ams_media;
+            portEXIT_CRITICAL(&s_ams_media_lock);
+            ui_apply(&ams_msg);
         }
 
         unsigned media_cmd = atomic_exchange(&s_media_cmd, 0);

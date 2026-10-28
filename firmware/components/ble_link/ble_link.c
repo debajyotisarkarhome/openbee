@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ams.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "host/ble_hs.h"
@@ -32,6 +33,8 @@ static uint8_t s_own_addr_type;
 static char s_name[16];
 
 static void advertise(void);
+
+void ble_store_config_init(void); // NimBLE's NVS bond store; it has no public header
 
 static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -85,6 +88,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             if (s_on_conn) {
                 s_on_conn(true);
             }
+            ams_on_connect(s_conn);
         } else {
             advertise();
         }
@@ -93,6 +97,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         ESP_LOGI(TAG, "disconnected (reason %d)", ev->disconnect.reason);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         s_tx_subscribed = false;
+        ams_on_disconnect();
         if (s_on_conn) {
             s_on_conn(false);
         }
@@ -106,6 +111,21 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             s_tx_subscribed = ev->subscribe.cur_notify;
         }
         break;
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        ESP_LOGI(TAG, "encryption change: %d", ev->enc_change.status);
+        ams_on_enc_change(ev->enc_change.conn_handle, ev->enc_change.status);
+        break;
+    case BLE_GAP_EVENT_NOTIFY_RX:
+        ams_on_notify_rx(ev->notify_rx.conn_handle, ev->notify_rx.attr_handle, ev->notify_rx.om);
+        break;
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        // The phone lost its bond (e.g. "Forget this device") but we still have ours: drop ours and re-pair.
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &desc) == 0) {
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+        }
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "mtu %d", ev->mtu.value);
         break;
@@ -177,6 +197,14 @@ esp_err_t ble_link_init(ble_link_rx_cb_t on_rx, ble_link_conn_cb_t on_conn)
     }
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
+    // Bonding for the iPhone's Apple Media Service (Just Works, LE Secure Connections). The OpenBee service
+    // itself needs no encryption, so a phone is only asked to pair when ams.c finds AMS on it.
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
@@ -185,6 +213,7 @@ esp_err_t ble_link_init(ble_link_rx_cb_t on_rx, ble_link_conn_cb_t on_conn)
     }
     ble_svc_gap_device_name_set(s_name);
     ble_att_set_preferred_mtu(247);
+    ble_store_config_init();
 
     nimble_port_freertos_init(host_task);
     return ESP_OK;
