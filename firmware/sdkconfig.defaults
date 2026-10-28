@@ -26,3 +26,12 @@ CONFIG_LV_FONT_DEFAULT_MONTSERRAT_20=y
 CONFIG_LV_USE_TILEVIEW=y
 CONFIG_LV_USE_ARC=y
 CONFIG_LV_USE_LINE=y
+
+# app_main runs the UI/BLE dispatch loop; default 3584 is too tight
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Rendering speed: LVGL's software renderer is unusable at -Og
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# 60 Hz refresh; LVGL 9 also uses this period for touch reads
+CONFIG_LV_DEF_REFR_PERIOD=16
+CONFIG_LV_USE_CLIB_STRING=y

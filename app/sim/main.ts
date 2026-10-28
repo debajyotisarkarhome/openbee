@@ -4,7 +4,9 @@ import { CurveClass, Maneuver, MsgType, NavState, NotifKind, decode } from '../s
 import { Route, bearingAt, pointAt } from '../src/core/route';
 import { NavSession } from '../src/core/session';
 import { curveClassAt } from '../src/core/shape';
-import { DisplayRenderer, fmtDistance, newDeviceState } from './display';
+import {
+  BRIGHT_BTN_CY, BRIGHT_BTN_DX, BRIGHT_BTN_R, DisplayRenderer, TILE_SETTINGS, brightnessStep, fmtDistance, newDeviceState,
+} from './display';
 import { DEMO_ROUTES } from './routes';
 
 const TICK_MS = 50;
@@ -304,22 +306,40 @@ for (const canvas of canvases) {
     if (!dragging) return;
     const dx = (e.clientX - dragX0) / dragW;
     if (Math.abs(dx) > 0.03) moved = true;
-    tile = Math.max(-0.15, Math.min(2.15, tile0 - dx));
+    tile = Math.max(-0.15, Math.min(TILE_SETTINGS + 0.15, tile0 - dx));
   });
 }
-const endDrag = () => {
+/** Taps on the Settings view hit its −/+ buttons (device px); anywhere else does nothing there, like ui.c. */
+function settingsTap(canvas: HTMLCanvasElement, e: PointerEvent) {
+  const box = canvas.getBoundingClientRect();
+  const x = ((e.clientX - box.left) / box.width) * 240, y = ((e.clientY - box.top) / box.height) * 240;
+  for (const dir of [-1, 1] as const) {
+    if (Math.hypot(x - (120 + dir * BRIGHT_BTN_DX), y - BRIGHT_BTN_CY) <= BRIGHT_BTN_R) {
+      dev.brightnessPct = brightnessStep(dev.brightnessPct, dir);
+      applyBrightness();
+    }
+  }
+}
+/** The real screen gets dimmer; approximate that on the canvas. */
+function applyBrightness() {
+  for (const c of canvases) c.style.filter = `brightness(${0.25 + 0.75 * (dev.brightnessPct / 100)})`;
+}
+const endDrag = (e?: PointerEvent) => {
   if (!dragging) return;
   dragging = false;
   if (!moved) {
-    if (tileTarget !== 0) tileTarget = 0;
+    if (tileTarget === TILE_SETTINGS) {
+      if (e) settingsTap(e.currentTarget as HTMLCanvasElement, e);
+    } else if (tileTarget !== 0) tileTarget = 0;
   } else {
     const delta = tile - tile0;
-    tileTarget = Math.max(0, Math.min(2, Math.abs(delta) > 0.18 ? Math.round(tile0) + Math.sign(delta) : Math.round(tile0)));
+    tileTarget = Math.max(0, Math.min(TILE_SETTINGS,
+      Math.abs(delta) > 0.18 ? Math.round(tile0) + Math.sign(delta) : Math.round(tile0)));
   }
   syncControls();
 };
 const onKey = (e: KeyboardEvent) => {
-  if (e.key === 'ArrowRight') tileTarget = Math.min(2, tileTarget + 1);
+  if (e.key === 'ArrowRight') tileTarget = Math.min(TILE_SETTINGS, tileTarget + 1);
   else if (e.key === 'ArrowLeft') tileTarget = Math.max(0, tileTarget - 1);
   else return;
   e.preventDefault();
@@ -327,7 +347,7 @@ const onKey = (e: KeyboardEvent) => {
 };
 for (const canvas of canvases) {
   canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointercancel', () => endDrag()); // a cancelled touch is never a tap
   canvas.addEventListener('keydown', onKey);
 }
 
@@ -335,6 +355,7 @@ window.addEventListener('resize', () => { sizeCanvas(); drawOverview(); });
 
 // ---------- boot ----------
 sizeCanvas();
+applyBrightness();
 startRoute(0);
 setInterval(step, TICK_MS);
 setInterval(readouts, 250);

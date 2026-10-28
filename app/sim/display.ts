@@ -8,6 +8,11 @@ const C_TEXT = '#FFFFFF', C_DIM = '#8A8F98', C_ACCENT = '#00D1FF';
 const CURVE_COLORS = ['#C8CCD2', '#FFD400', '#FF8A00', '#FF2D2D'];
 const CURVE_NAMES = ['', 'GENTLE', 'MEDIUM', 'SHARP'];
 const MAP_BG = '#11151A';
+const C_PANEL = '#101418', C_PH_RING = '#1C232B';
+const PH_ICON_Y = 92, PH_ICON_D = 72, PH_PULSE_MAX_D = 200, PH_PULSE_MS = 2400;
+const BATT_ARC_W = 10, BATT_ARC_INSET = 4, BATT_ARC_GAP = 8, BATT_LOW_PCT = 15, BATT_MID_PCT = 35;
+const BATT_DEV_Y = 46, BATT_PHONE_Y = 128, BATT_DIVIDER_W = 100;
+const battColor = (pct: number) => (pct <= BATT_LOW_PCT ? '#FF2D2D' : pct <= BATT_MID_PCT ? '#FF8A00' : '#22C55E');
 const VIEW_MAX_M = 300;
 const FONT = (px: number) => `500 ${px}px Montserrat, "Helvetica Neue", Arial, sans-serif`;
 
@@ -19,10 +24,26 @@ export interface DeviceState {
   notif: NotifMsg | null;
   notifAt: number;
   deviceBattPct: number;
+  brightnessPct: number;
 }
 
 export function newDeviceState(): DeviceState {
-  return { connected: true, navState: NavState.IDLE, nav: null, trip: null, notif: null, notifAt: 0, deviceBattPct: 87 };
+  return {
+    connected: true, navState: NavState.IDLE, nav: null, trip: null, notif: null, notifAt: 0, deviceBattPct: 87,
+    brightnessPct: 80,
+  };
+}
+
+/** Settings view geometry, shared with the simulator's tap handling (mirrors BRIGHT_* in ui.c). */
+export const TILE_SETTINGS = 3;
+export const BRIGHT_MIN = 5, BRIGHT_STEP = 10;
+const BRIGHT_ARC_W = 14, BRIGHT_ARC_START = 135, BRIGHT_ARC_END = 45;
+export const BRIGHT_BTN_R = 28, BRIGHT_BTN_DX = 38, BRIGHT_BTN_CY = 140 + 28;
+
+/** Same 10 % snapping as bright_step() in ui.c. */
+export function brightnessStep(v: number, dir: 1 | -1): number {
+  const n = dir > 0 ? (Math.floor(v / BRIGHT_STEP) + 1) * BRIGHT_STEP : (Math.ceil(v / BRIGHT_STEP) - 1) * BRIGHT_STEP;
+  return Math.max(BRIGHT_MIN, Math.min(100, n));
 }
 
 export class DisplayRenderer {
@@ -76,14 +97,15 @@ export class DisplayRenderer {
     c.fillStyle = MAP_BG;
     c.fillRect(0, 0, W, W);
 
-    for (let t = 0; t < 3; t++) {
+    for (let t = 0; t <= TILE_SETTINGS; t++) {
       const x = (t - this.tile) * W;
       if (x <= -W || x >= W) continue;
       c.save();
       c.translate(x, 0);
-      if (t === 0) this.drawNav(st);
+      if (t === 0) this.drawNav(st, nowMs);
       else if (t === 1) this.drawTrip(st, deviceClockS, tzMin);
-      else this.drawStatus(st);
+      else if (t === 2) this.drawStatus(st);
+      else this.drawSettings(st);
       c.restore();
     }
 
@@ -120,9 +142,14 @@ export class DisplayRenderer {
   }
 
   // ---------- Nav tile ----------
-  private drawNav(st: DeviceState) {
+  private drawNav(st: DeviceState, nowMs: number) {
     const c = this.ctx;
     const m = this.lastNav;
+    // Same rule as refresh_placeholder() in ui.c (the simulator has no demo mode).
+    if (!st.connected || st.navState === NavState.IDLE || !m) {
+      this.drawPlaceholder(!st.connected, nowMs);
+      return;
+    }
     const s = this.scale;
     this.drawMap(m, s);
 
@@ -170,6 +197,69 @@ export class DisplayRenderer {
     if (m?.street) this.text(this.ellipsize(m.street, 14, 150), CX, 210, 14, C_TEXT);
   }
 
+
+  /** Port of build_placeholder()/refresh_placeholder() in ui.c: radar rings, icon disc, title, hint, device name. */
+  private drawPlaceholder(waiting: boolean, nowMs: number) {
+    const c = this.ctx;
+    const ring = (d: number, color: string, width: number) => {
+      c.beginPath();
+      c.arc(CX, PH_ICON_Y, d / 2 - width / 2, 0, Math.PI * 2);
+      c.strokeStyle = color;
+      c.lineWidth = width;
+      c.stroke();
+    };
+    ring(196, C_PH_RING, 1);
+    ring(136, C_PH_RING, 2);
+    if (waiting) {
+      // Grows out of the icon and fades, ease-out, like ph_pulse_cb with lv_anim_path_ease_out.
+      const k = 1 - Math.pow(1 - (nowMs % PH_PULSE_MS) / PH_PULSE_MS, 3);
+      c.globalAlpha = 0.7 * (1 - k);
+      ring(PH_ICON_D + (PH_PULSE_MAX_D - PH_ICON_D) * k, C_ACCENT, 2);
+      c.globalAlpha = 1;
+    }
+    c.beginPath();
+    c.arc(CX, PH_ICON_Y, PH_ICON_D / 2 - 1, 0, Math.PI * 2);
+    c.fillStyle = '#0E2A36';
+    c.fill();
+    c.strokeStyle = C_ACCENT;
+    c.lineWidth = 2;
+    c.stroke();
+
+    // Stand-ins for LV_SYMBOL_BLUETOOTH / LV_SYMBOL_GPS (the canvas has no FontAwesome glyphs).
+    c.strokeStyle = C_ACCENT;
+    c.lineWidth = 3;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.beginPath();
+    if (waiting) {
+      const x = CX, y = PH_ICON_Y;
+      c.moveTo(x - 7, y - 7);
+      c.lineTo(x + 7, y + 6);
+      c.lineTo(x, y + 13);
+      c.lineTo(x, y - 13);
+      c.lineTo(x + 7, y - 6);
+      c.lineTo(x - 7, y + 7);
+    } else {
+      c.arc(CX, PH_ICON_Y, 8, 0, Math.PI * 2);
+      for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+        c.moveTo(CX + dx * 8, PH_ICON_Y + dy * 8);
+        c.lineTo(CX + dx * 14, PH_ICON_Y + dy * 14);
+      }
+    }
+    c.stroke();
+
+    this.text(waiting ? 'Waiting for phone' : 'Ready to ride', CX, 151, 20, C_TEXT);
+    if (waiting) {
+      const name = 'OpenBee-SIM';
+      c.font = FONT(14);
+      const w = c.measureText(name).width + 20;
+      this.roundRect(CX - w / 2, 172, w, 22, 10, C_PANEL);
+      this.text(name, CX, 183, 14, C_ACCENT);
+    } else {
+      this.text('Pick a destination', CX, 176, 14, C_DIM);
+      this.text('in the app', CX, 192, 14, C_DIM);
+    }
+  }
 
   // ---------- road styles ----------
   private toPx(m: NavMsg, i: number, s: number): [number, number] {
@@ -333,22 +423,85 @@ export class DisplayRenderer {
     }
   }
 
+  /** Port of build_status()/batt_set() in ui.c: semicircle gauges on the edge, device top, phone bottom. */
   private drawStatus(st: DeviceState) {
-    this.text(st.connected ? 'Phone connected' : 'Waiting for phone', CX, 58, 20, C_TEXT);
-    this.text(`Device  ${st.deviceBattPct}%`, CX, 130, 20, C_TEXT);
-    const pb = st.trip?.phoneBatt;
-    this.text(`Phone  ${pb != null ? pb + '%' : '--'}`, CX, 160, 20, C_TEXT);
-    this.text('Simulator', CX, 203, 14, C_DIM);
+    const c = this.ctx;
+    const deg = Math.PI / 180;
+    const r = W / 2 - BATT_ARC_INSET - BATT_ARC_W / 2;
+    const span = 180 - 2 * BATT_ARC_GAP;
+    const arc = (a0: number, a1: number, color: string) => {
+      c.beginPath();
+      c.arc(CX, CX, r, a0 * deg, a1 * deg);
+      c.strokeStyle = color;
+      c.lineWidth = BATT_ARC_W;
+      c.lineCap = 'round';
+      c.stroke();
+    };
+    const pb = st.trip?.phoneBatt ?? null;
+    // Device: top half, 180+gap → 360-gap clockwise, filled left → right.
+    // Phone: bottom half, gap → 180-gap clockwise (right → left), filled back from the left end.
+    arc(180 + BATT_ARC_GAP, 360 - BATT_ARC_GAP, C_PH_RING);
+    if (st.deviceBattPct > 0) arc(180 + BATT_ARC_GAP, 180 + BATT_ARC_GAP + (span * st.deviceBattPct) / 100, battColor(st.deviceBattPct));
+    arc(BATT_ARC_GAP, 180 - BATT_ARC_GAP, C_PH_RING);
+    if (pb != null && pb > 0) arc(180 - BATT_ARC_GAP - (span * pb) / 100, 180 - BATT_ARC_GAP, battColor(pb));
+
+    this.roundRect(CX - BATT_DIVIDER_W / 2, CX - 1, BATT_DIVIDER_W, 2, 0, C_PH_RING);
+    // batt_block(): caption top y, percentage top y+16, sub-line top y+48 (text() takes centres).
+    const block = (y: number, caption: string, pct: number | null, sub: string) => {
+      this.text(caption, CX, y + 8, 14, C_DIM);
+      this.text(pct != null ? `${pct}%` : '--', CX, y + 32, 28, C_TEXT);
+      if (sub) this.text(sub, CX, y + 56, 14, C_DIM);
+    };
+    block(BATT_DEV_Y, 'DEVICE', st.deviceBattPct, ''); // the simulator has no battery voltage
+    block(BATT_PHONE_Y, 'PHONE', pb, !st.connected ? 'offline' : pb != null ? 'connected' : 'no data');
+  }
+
+  /** Port of build_settings() in ui.c: brightness gauge open at the bottom, big value, −/+ buttons. */
+  private drawSettings(st: DeviceState) {
+    const c = this.ctx;
+    const deg = Math.PI / 180;
+    // lv_arc with pad = inset + width/2: stroke centre sits a further width/2 in.
+    const r = W / 2 - (BATT_ARC_INSET + BRIGHT_ARC_W / 2) - BRIGHT_ARC_W / 2;
+    const span = 360 - BRIGHT_ARC_START + BRIGHT_ARC_END;
+    const k = (st.brightnessPct - BRIGHT_MIN) / (100 - BRIGHT_MIN);
+    const end = BRIGHT_ARC_START + span * k;
+    c.lineWidth = BRIGHT_ARC_W;
+    c.lineCap = 'round';
+    c.beginPath();
+    c.arc(CX, CX, r, BRIGHT_ARC_START * deg, (360 + BRIGHT_ARC_END) * deg);
+    c.strokeStyle = C_PH_RING;
+    c.stroke();
+    c.beginPath();
+    c.arc(CX, CX, r, BRIGHT_ARC_START * deg, end * deg);
+    c.strokeStyle = C_ACCENT;
+    c.stroke();
+    c.beginPath();
+    c.arc(CX + Math.cos(end * deg) * r, CX + Math.sin(end * deg) * r, BRIGHT_ARC_W / 2 + 3, 0, Math.PI * 2);
+    c.fillStyle = C_TEXT;
+    c.fill();
+
+    this.text('BRIGHTNESS', CX, 66, 14, C_DIM);
+    this.text(`${st.brightnessPct}%`, CX, 104, 40, C_TEXT);
+    for (const [dx, sym] of [[-BRIGHT_BTN_DX, '−'], [BRIGHT_BTN_DX, '+']] as const) {
+      c.beginPath();
+      c.arc(CX + dx, BRIGHT_BTN_CY, BRIGHT_BTN_R - 1, 0, Math.PI * 2);
+      c.fillStyle = C_PANEL;
+      c.fill();
+      c.strokeStyle = C_PH_RING;
+      c.lineWidth = 2;
+      c.stroke();
+      this.text(sym, CX + dx, BRIGHT_BTN_CY + 1, 28, C_TEXT);
+    }
   }
 
   // ---------- overlays ----------
   private drawBanner(st: DeviceState) {
+    // "No phone" / "Pick a destination" are shown by the nav placeholder instead (mirrors refresh_banner in ui.c).
     let txt: string | null = null, color = '#3A3F47';
-    if (!st.connected) txt = 'No phone';
-    else if (st.navState === NavState.REROUTING) [txt, color] = ['Rerouting...', '#D97706'];
+    if (!st.connected) return;
+    if (st.navState === NavState.REROUTING) [txt, color] = ['Rerouting...', '#D97706'];
     else if (st.navState === NavState.GPS_LOST) [txt, color] = ['GPS lost', '#B91C1C'];
     else if (st.navState === NavState.ARRIVED) [txt, color] = ['Arrived', '#15803D'];
-    else if (st.navState === NavState.IDLE) txt = 'Pick a destination';
     if (!txt) return;
     this.ctx.globalAlpha = 0.9;
     this.roundRect(30, 104, 180, 44, 22, color);

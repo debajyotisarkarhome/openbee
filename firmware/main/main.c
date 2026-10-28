@@ -21,6 +21,11 @@ static const char *TAG = "main";
 #define FW_VERSION 1
 #define TICK_MS 500
 #define BATTERY_PERIOD_MS 10000
+#define RX_QUEUE_LEN 40 // a full 32-part ROADS set plus NAV/TRIP, even if one render is in progress (~10 KB)
+#define NVS_NS "openbee"
+#define NVS_KEY_BRIGHTNESS "bright"
+#define BRIGHTNESS_DEFAULT 80
+#define BRIGHTNESS_SAVE_DELAY_MS 1000 // save once the rider stops adjusting, not on every drag step
 
 typedef struct {
     uint16_t len;
@@ -30,6 +35,8 @@ typedef struct {
 static QueueHandle_t s_rx_q;
 static atomic_bool s_demo_toggle_req;
 static atomic_bool s_connected_changed;
+static atomic_uint s_brightness;
+static atomic_uint s_brightness_changed_tick; // 0 = saved
 
 static void on_rx(const uint8_t *data, size_t len)
 {
@@ -51,6 +58,45 @@ static void on_conn(bool connected)
 static void on_demo_toggle(void)
 {
     atomic_store(&s_demo_toggle_req, true); // called inside the LVGL task: defer to the main loop
+}
+
+static void on_brightness(uint8_t pct)
+{
+    // Inside the LVGL task: set the backlight right away so dragging feels live; the main loop persists it.
+    board_backlight_set(pct);
+    atomic_store(&s_brightness, pct);
+    atomic_store(&s_brightness_changed_tick, xTaskGetTickCount() | 1); // never 0
+}
+
+static uint8_t brightness_load(void)
+{
+    uint8_t v = BRIGHTNESS_DEFAULT;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) { // fails on first boot: namespace not created yet
+        nvs_get_u8(h, NVS_KEY_BRIGHTNESS, &v);
+        nvs_close(h);
+    }
+    return v < UI_BRIGHTNESS_MIN ? UI_BRIGHTNESS_MIN : v > 100 ? 100 : v;
+}
+
+static void brightness_save_if_settled(TickType_t now)
+{
+    unsigned changed = atomic_load(&s_brightness_changed_tick);
+    if (!changed || now - changed < pdMS_TO_TICKS(BRIGHTNESS_SAVE_DELAY_MS)) {
+        return;
+    }
+    // Only mark clean if no newer change raced in; otherwise the next pass saves that one.
+    if (!atomic_compare_exchange_strong(&s_brightness_changed_tick, &changed, 0)) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "nvs open failed; brightness not saved");
+        return;
+    }
+    nvs_set_u8(h, NVS_KEY_BRIGHTNESS, (uint8_t)atomic_load(&s_brightness));
+    nvs_commit(h);
+    nvs_close(h);
 }
 
 static uint32_t now_s(void)
@@ -94,9 +140,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    s_rx_q = xQueueCreate(8, sizeof(frame_t));
+    s_rx_q = xQueueCreate(RX_QUEUE_LEN, sizeof(frame_t));
 
     lv_display_t *disp = board_display_init();
+    uint8_t brightness = brightness_load();
+    atomic_store(&s_brightness, brightness);
+    board_backlight_set(brightness);
     if (board_battery_init() != ESP_OK) {
         ESP_LOGW(TAG, "battery ADC unavailable");
     }
@@ -105,7 +154,7 @@ void app_main(void)
     esp_read_mac(mac, ESP_MAC_BT);
     char name[16];
     snprintf(name, sizeof name, "OpenBee-%02X%02X", mac[4], mac[5]);
-    ui_init(disp, name, on_demo_toggle);
+    ui_init(disp, name, on_demo_toggle, brightness, on_brightness);
     ESP_ERROR_CHECK(ble_link_init(on_rx, on_conn));
 
 #ifdef CONFIG_OPENBEE_DEMO_MODE
@@ -126,11 +175,17 @@ void app_main(void)
 
     for (;;) {
         if (xQueueReceive(s_rx_q, &f, pdMS_TO_TICKS(TICK_MS)) == pdTRUE) {
-            if (!proto_decode(f.data, f.len, &msg)) {
-                ESP_LOGW(TAG, "bad frame (%u bytes, type 0x%02x)", f.len, f.len > 1 ? f.data[1] : 0);
-            } else if (!demo || msg.type == MSG_NOTIF) {
-                ui_apply(&msg);
-            }
+            // Drain everything queued under one lock: per-frame locking waits out a whole render each time, and
+            // a ROADS burst then overflows the queue (one lost part and that street set never shows).
+            ui_lock();
+            do {
+                if (!proto_decode(f.data, f.len, &msg)) {
+                    ESP_LOGW(TAG, "bad frame (%u bytes, type 0x%02x)", f.len, f.len > 1 ? f.data[1] : 0);
+                } else if (!demo || msg.type == MSG_NOTIF) {
+                    ui_apply(&msg);
+                }
+            } while (xQueueReceive(s_rx_q, &f, 0) == pdTRUE);
+            ui_unlock();
         }
 
         if (atomic_exchange(&s_connected_changed, false)) {
@@ -153,7 +208,11 @@ void app_main(void)
         if (demo && now - last_tick >= pdMS_TO_TICKS(TICK_MS)) {
             float dt = (now - last_tick) * portTICK_PERIOD_MS / 1000.0f;
             last_tick = now;
-            proto_msg_t nav = {.type = MSG_NAV}, trip = {.type = MSG_TRIP}, st = {.type = MSG_STATE};
+            // static: three proto_msg_t unions (~2.2 KB) would overflow the main task stack
+            static proto_msg_t nav, trip, st;
+            nav = (proto_msg_t){.type = MSG_NAV};
+            trip = (proto_msg_t){.type = MSG_TRIP};
+            st = (proto_msg_t){.type = MSG_STATE};
             demo_step(dt, now_s(), &nav.u.nav, &trip.u.trip);
             st.u.state = NAV_NAVIGATING;
             ui_apply(&st);
@@ -162,6 +221,8 @@ void app_main(void)
         } else if (!demo) {
             last_tick = now;
         }
+
+        brightness_save_if_settled(now);
 
         if (now - last_batt >= pdMS_TO_TICKS(BATTERY_PERIOD_MS)) {
             last_batt = now;
