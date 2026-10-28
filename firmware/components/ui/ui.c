@@ -65,12 +65,26 @@ enum { PH_UNSET = -1, PH_HIDDEN, PH_WAITING, PH_READY };
 #define BRIGHT_BTN_Y 140 // top edge of the buttons
 #define BRIGHT_KNOB_HIT_R 28 // touch radius around the knob centre (gloves); the rest of the page swipes
 
+// Media tile (240x240 px): volume ring + title/artist + five round buttons, all inside the ring.
+#define MEDIA_RING_INSET 6
+#define MEDIA_RING_W 6
+#define MEDIA_TITLE_Y 44
+#define MEDIA_TITLE_W 130
+#define MEDIA_ARTIST_Y 68
+#define MEDIA_ARTIST_W 120
+#define MEDIA_ROW_Y 120 // centre of prev / play / next
+#define MEDIA_VOL_Y 190 // centre of vol - / vol +
+
 static const uint32_t CURVE_COLORS[] = {0xC8CCD2, 0xFFD400, 0xFF8A00, 0xFF2D2D};
 static const char *CURVE_NAMES[] = {"", "GENTLE", "MEDIUM", "SHARP"};
 
 static struct {
     lv_obj_t *tv;
-    lv_obj_t *tile_nav, *tile_trip, *tile_status;
+    lv_obj_t *tile_nav, *tile_media, *tile_trip, *tile_status;
+
+    // Media
+    lv_obj_t *media_ring, *media_title, *media_artist, *media_play_lbl;
+    ui_media_cb_t on_media_cmd;
 
     // Nav
     lv_obj_t *map; // custom-drawn: streets, route, curve badges, rider puck
@@ -892,6 +906,89 @@ static void build_settings(lv_obj_t *t)
     bright_button(t, BRIGHT_BTN_DX, LV_SYMBOL_PLUS, 1);
 }
 
+// ---------- media ----------
+
+static void media_button_cb(lv_event_t *e)
+{
+    if (s.on_media_cmd) {
+        s.on_media_cmd((uint8_t)(intptr_t)lv_event_get_user_data(e));
+    }
+}
+
+/** Round button centred at (cx, cy). Play is the filled accent one with a black symbol; vol buttons also repeat. */
+static lv_obj_t *media_button(lv_obj_t *t, int32_t cx, int32_t cy, int32_t d, const lv_font_t *font, const char *symbol,
+                              media_cmd_t cmd, bool primary, bool repeat)
+{
+    lv_obj_t *b = lv_button_create(t);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, d, d);
+    lv_obj_set_pos(b, cx - d / 2, cy - d / 2);
+    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(b, primary ? C_ACCENT : C_PANEL, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(b, primary ? C_ACCENT : C_PH_RING, 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x0E2A36), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(b, C_ACCENT, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(b, media_button_cb, LV_EVENT_CLICKED, (void *)(intptr_t)cmd);
+    if (repeat) {
+        lv_obj_add_event_cb(b, media_button_cb, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)cmd);
+    }
+    lv_obj_t *l = label(b, font, primary ? C_BG : C_TEXT);
+    lv_label_set_text(l, symbol);
+    lv_obj_center(l);
+    return l;
+}
+
+static void build_media(lv_obj_t *t)
+{
+    style_tile(t);
+    // No tap-to-go-back, like Settings: a near miss on a button must not throw the rider off the page.
+
+    // Volume ring: display only, full circle starting at 12 o'clock.
+    s.media_ring = lv_arc_create(t);
+    lv_obj_set_size(s.media_ring, W, H);
+    lv_obj_center(s.media_ring);
+    lv_obj_set_clickable(s.media_ring, false);
+    lv_arc_set_rotation(s.media_ring, 270);
+    lv_arc_set_bg_angles(s.media_ring, 0, 360);
+    lv_arc_set_range(s.media_ring, 0, 100);
+    lv_obj_set_style_pad_all(s.media_ring, MEDIA_RING_INSET, 0);
+    lv_obj_set_style_arc_width(s.media_ring, MEDIA_RING_W, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s.media_ring, C_PH_RING, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s.media_ring, MEDIA_RING_W, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s.media_ring, C_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s.media_ring, LV_OPA_TRANSP, LV_PART_KNOB); // no knob
+    lv_obj_set_style_pad_all(s.media_ring, 0, LV_PART_KNOB);
+
+    s.media_title = label(t, &lv_font_montserrat_20, C_TEXT);
+    lv_obj_set_width(s.media_title, MEDIA_TITLE_W);
+    lv_label_set_long_mode(s.media_title, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(s.media_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s.media_title, LV_ALIGN_TOP_MID, 0, MEDIA_TITLE_Y);
+    s.media_artist = label(t, &lv_font_montserrat_14, C_DIM);
+    lv_obj_set_width(s.media_artist, MEDIA_ARTIST_W);
+    lv_label_set_long_mode(s.media_artist, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(s.media_artist, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s.media_artist, LV_ALIGN_TOP_MID, 0, MEDIA_ARTIST_Y);
+
+    media_button(t, 54, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_PREV, MEDIA_CMD_PREV, false, false);
+    s.media_play_lbl =
+        media_button(t, 120, MEDIA_ROW_Y, 70, &lv_font_montserrat_28, LV_SYMBOL_PLAY, MEDIA_CMD_TOGGLE, true, false);
+    media_button(t, 186, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_NEXT, MEDIA_CMD_NEXT, false, false);
+    media_button(t, 92, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_MINUS, MEDIA_CMD_VOL_DOWN, false, true);
+    media_button(t, 148, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_PLUS, MEDIA_CMD_VOL_UP, false, true);
+}
+
+static void apply_media(const media_msg_t *m)
+{
+    bool active = m->state == MEDIA_PLAYING || m->state == MEDIA_PAUSED; // anything else (incl. unknown) = none
+    lv_label_set_text(s.media_title, active ? m->title : "Nothing playing");
+    lv_label_set_text(s.media_artist, active ? m->artist : "");
+    lv_arc_set_value(s.media_ring, active && m->volume_pct != PROTO_UNKNOWN_VOLUME ? (m->volume_pct > 100 ? 100 : m->volume_pct) : 0);
+    lv_label_set_text(s.media_play_lbl, m->state == MEDIA_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+}
+
 static void notif_hide(lv_timer_t *tm)
 {
     lv_obj_set_hidden(s.notif, true);
@@ -1201,11 +1298,12 @@ static void clock_tick(lv_timer_t *t)
 // ---------- public ----------
 
 void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on_demo_toggle, uint8_t brightness,
-             ui_brightness_cb_t on_brightness)
+             ui_brightness_cb_t on_brightness, ui_media_cb_t on_media_cmd)
 {
     lvgl_port_lock(0);
     strncpy(s.device_name, device_name, sizeof s.device_name - 1);
     s.on_demo_toggle = on_demo_toggle;
+    s.on_media_cmd = on_media_cmd;
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, C_BG, 0);
@@ -1214,10 +1312,13 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     lv_obj_set_style_bg_color(s.tv, C_BG, 0);
     lv_obj_set_scrollbar_mode(s.tv, LV_SCROLLBAR_MODE_OFF);
     s.tile_nav = lv_tileview_add_tile(s.tv, 0, 0, LV_DIR_RIGHT);
-    s.tile_trip = lv_tileview_add_tile(s.tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_status = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_settings = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT);
+    s.tile_media = lv_tileview_add_tile(s.tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_trip = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_status = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_settings = lv_tileview_add_tile(s.tv, 4, 0, LV_DIR_LEFT);
     build_nav(s.tile_nav);
+    build_media(s.tile_media);
+    apply_media(&(media_msg_t){.state = MEDIA_NONE, .volume_pct = PROTO_UNKNOWN_VOLUME});
     build_trip(s.tile_trip);
     build_status(s.tile_status);
     build_settings(s.tile_settings);
@@ -1253,6 +1354,9 @@ void ui_apply(const proto_msg_t *msg)
         break;
     case MSG_ROADS:
         apply_roads(&msg->u.roads);
+        break;
+    case MSG_MEDIA:
+        apply_media(&msg->u.media);
         break;
     default:
         break;

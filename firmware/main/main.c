@@ -35,6 +35,7 @@ typedef struct {
 static QueueHandle_t s_rx_q;
 static atomic_bool s_demo_toggle_req;
 static atomic_bool s_connected_changed;
+static atomic_uint s_media_cmd; // media_cmd_t + 1; 0 = none
 static atomic_uint s_brightness;
 static atomic_uint s_brightness_changed_tick; // 0 = saved
 
@@ -58,6 +59,22 @@ static void on_conn(bool connected)
 static void on_demo_toggle(void)
 {
     atomic_store(&s_demo_toggle_req, true); // called inside the LVGL task: defer to the main loop
+}
+
+static void on_media_cmd(uint8_t cmd)
+{
+    atomic_store(&s_media_cmd, (unsigned)cmd + 1); // inside the LVGL task: defer to the main loop
+}
+
+/** Send a media command from the device's buttons to whichever source is playing. Task 5 adds the AMS branch. */
+static void media_route(uint8_t cmd)
+{
+    uint8_t buf[8];
+    size_t n = proto_encode_media_cmd(cmd, buf);
+    esp_err_t err = ble_link_send(buf, n);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) { // INVALID_STATE = no phone connected
+        ESP_LOGW(TAG, "media cmd %u not sent: %s", cmd, esp_err_to_name(err));
+    }
 }
 
 static void on_brightness(uint8_t pct)
@@ -154,7 +171,7 @@ void app_main(void)
     esp_read_mac(mac, ESP_MAC_BT);
     char name[16];
     snprintf(name, sizeof name, "OpenBee-%02X%02X", mac[4], mac[5]);
-    ui_init(disp, name, on_demo_toggle, brightness, on_brightness);
+    ui_init(disp, name, on_demo_toggle, brightness, on_brightness, on_media_cmd);
     ESP_ERROR_CHECK(ble_link_init(on_rx, on_conn));
 
 #ifdef CONFIG_OPENBEE_DEMO_MODE
@@ -181,7 +198,7 @@ void app_main(void)
             do {
                 if (!proto_decode(f.data, f.len, &msg)) {
                     ESP_LOGW(TAG, "bad frame (%u bytes, type 0x%02x)", f.len, f.len > 1 ? f.data[1] : 0);
-                } else if (!demo || msg.type == MSG_NOTIF) {
+                } else if (!demo || msg.type == MSG_NOTIF || msg.type == MSG_MEDIA) {
                     ui_apply(&msg);
                 }
             } while (xQueueReceive(s_rx_q, &f, 0) == pdTRUE);
@@ -192,7 +209,16 @@ void app_main(void)
             ui_set_connected(ble_link_connected());
             if (ble_link_connected()) {
                 report_battery();
+            } else {
+                // The phone is gone, so its now-playing is stale. (Task 5's AMS source clears itself.)
+                static proto_msg_t none = {.type = MSG_MEDIA, .u.media = {.state = MEDIA_NONE, .volume_pct = PROTO_UNKNOWN_VOLUME}};
+                ui_apply(&none);
             }
+        }
+
+        unsigned media_cmd = atomic_exchange(&s_media_cmd, 0);
+        if (media_cmd) {
+            media_route((uint8_t)(media_cmd - 1));
         }
 
         if (atomic_exchange(&s_demo_toggle_req, false)) {
