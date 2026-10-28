@@ -962,12 +962,13 @@ static void build_media(lv_obj_t *t)
     lv_obj_set_style_pad_all(s.media_ring, 0, LV_PART_KNOB);
 
     s.media_title = label(t, &lv_font_montserrat_20, C_TEXT);
-    lv_obj_set_width(s.media_title, MEDIA_TITLE_W);
+    // Fixed one-line height, else LONG_DOT wraps (content-sized height) instead of ellipsizing.
+    lv_obj_set_size(s.media_title, MEDIA_TITLE_W, lv_font_get_line_height(&lv_font_montserrat_20));
     lv_label_set_long_mode(s.media_title, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s.media_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s.media_title, LV_ALIGN_TOP_MID, 0, MEDIA_TITLE_Y);
     s.media_artist = label(t, &lv_font_montserrat_14, C_DIM);
-    lv_obj_set_width(s.media_artist, MEDIA_ARTIST_W);
+    lv_obj_set_size(s.media_artist, MEDIA_ARTIST_W, lv_font_get_line_height(&lv_font_montserrat_14));
     lv_label_set_long_mode(s.media_artist, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s.media_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s.media_artist, LV_ALIGN_TOP_MID, 0, MEDIA_ARTIST_Y);
