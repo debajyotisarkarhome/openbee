@@ -10,11 +10,11 @@ import { Route } from '../core/route';
 import { NavSession } from '../core/session';
 import { simulateRide } from '../core/simulator';
 import { DeviceLink } from './ble';
-import { fetchRoute } from './graphhopper';
-import { fetchRoads } from './osm';
+import { fetchRoute } from './routing';
+import { fetchStreets, prefetchAlongRoute } from './streets';
 
 export const LOCATION_TASK = 'openbee-location';
-const SIM_SPEED_MPS = 14;
+const DEFAULT_SIM_SPEED_KMH = 50;
 const SIM_INTERVAL_MS = 500;
 
 let batteryPct: number | null = null;
@@ -25,7 +25,7 @@ export const link = new DeviceLink();
 export const session = new NavSession({
   send: (f) => link.send(f),
   fetchRoute,
-  fetchRoads,
+  fetchStreets,
   phoneBatteryPct: () => batteryPct,
   tzOffsetMin: () => -new Date().getTimezoneOffset(),
 });
@@ -66,6 +66,8 @@ export async function currentPosition(): Promise<LatLon> {
 export async function startRide(route: Route, destination: LatLon) {
   if (!(await ensureLocationPermission(true))) throw new Error('Location permission ("Allow all the time") is required');
   session.start(route, destination);
+  // Warm the tile cache ahead of the rider so a signal gap does not blank the map. Fire-and-forget.
+  void prefetchAlongRoute(route);
   await Location.startLocationUpdatesAsync(LOCATION_TASK, {
     accuracy: Location.Accuracy.BestForNavigation,
     timeInterval: 1000,
@@ -83,9 +85,11 @@ export async function startRide(route: Route, destination: LatLon) {
 }
 
 /** Ride the route virtually: same pipeline, fake GPS. Great for testing the device on the bench. */
-export function startSimulation(route: Route, destination: LatLon) {
+export function startSimulation(route: Route, destination: LatLon, speedKmh = DEFAULT_SIM_SPEED_KMH) {
   session.start(route, destination);
-  const fixes = simulateRide(route, { speedMps: SIM_SPEED_MPS, intervalMs: SIM_INTERVAL_MS, startMs: Date.now() });
+  void prefetchAlongRoute(route);
+  const speedMps = speedKmh / 3.6;
+  const fixes = simulateRide(route, { speedMps, intervalMs: SIM_INTERVAL_MS, startMs: Date.now() });
   simTimer = setInterval(() => {
     const next = fixes.next();
     if (next.done) {

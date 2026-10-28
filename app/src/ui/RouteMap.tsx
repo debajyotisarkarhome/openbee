@@ -44,12 +44,31 @@ export function RouteMap({ route, position }: { route: Route; position?: LatLon 
       <Map style={StyleSheet.absoluteFill} mapStyle={OSM_STYLE}>
         <Camera key={bounds.join(',')} initialViewState={{ bounds, padding: { top: 40, bottom: 40, left: 40, right: 40 } }} />
         <GeoJSONSource id="route" data={line}>
-          <Layer id="route-casing" type="line" style={{ lineColor: '#003845', lineWidth: 9, lineCap: 'round', lineJoin: 'round' }} />
-          <Layer id="route-line" type="line" style={{ lineColor: colors.accent, lineWidth: 5, lineCap: 'round', lineJoin: 'round' }} />
+          <Layer
+            id="route-casing"
+            type="line"
+            paint={{ 'line-color': '#003845', 'line-width': 9 }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+          />
+          <Layer
+            id="route-line"
+            type="line"
+            paint={{ 'line-color': colors.accent, 'line-width': 5 }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+          />
         </GeoJSONSource>
         {position ? (
           <GeoJSONSource id="me" data={{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [position.lon, position.lat] } }}>
-            <Layer id="me-dot" type="circle" style={{ circleRadius: 7, circleColor: '#FFFFFF', circleStrokeColor: colors.accent, circleStrokeWidth: 3 }} />
+            <Layer
+              id="me-dot"
+              type="circle"
+              paint={{
+                'circle-radius': 7,
+                'circle-color': '#FFFFFF',
+                'circle-stroke-color': colors.accent,
+                'circle-stroke-width': 3,
+              }}
+            />
           </GeoJSONSource>
         ) : null}
       </Map>
@@ -58,5 +77,5 @@ export function RouteMap({ route, position }: { route: Route; position?: LatLon 
 }
 
 const styles = StyleSheet.create({
-  wrap: { height: 260, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.card },
+  wrap: { height: 260, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.surface },
 });

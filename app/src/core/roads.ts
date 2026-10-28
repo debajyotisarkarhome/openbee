@@ -17,6 +17,12 @@ export interface RoadMapOptions {
 
 export const DEFAULT_ROADMAP_OPTIONS: RoadMapOptions = { reanchorM: 300, radiusM: 700, simplifyM: 3, maxPoints: 600 };
 
+/** A point in the rider-relative, heading-up frame: meters, +y ahead, +x to the rider's right. */
+export interface RiderPoint {
+  x: number;
+  y: number;
+}
+
 export interface Pose {
   anchorId: number;
   poseX: number;
@@ -29,6 +35,8 @@ export class RoadMap {
   private anchor: LatLon | null = null;
   private anchorId = 0;
   private frames: Uint8Array[] = [];
+  /** The anchor-frame streets behind `frames`, kept so the phone can mirror what the device draws. */
+  private selected: RoadPoint[][] = [];
 
   constructor(private opts: RoadMapOptions = DEFAULT_ROADMAP_OPTIONS) {}
 
@@ -42,6 +50,7 @@ export class RoadMap {
     this.roads = [];
     this.anchor = null;
     this.frames = [];
+    this.selected = [];
   }
 
   get hasRoads() {
@@ -54,16 +63,37 @@ export class RoadMap {
   }
 
   /**
+   * True once the rider has left the current anchor's area, or before any anchor exists. The session uses
+   * this to fetch streets for the next anchor just in time, rather than prefetching a whole corridor.
+   */
+  needsAnchor(rider: LatLon): boolean {
+    return !this.anchor || haversine(this.anchor, rider) >= this.opts.reanchorM;
+  }
+
+  /**
    * Call with the rider's position on every fix. Returns ROADS frames to send when a new anchor is issued,
    * otherwise null.
    */
   update(rider: LatLon): Uint8Array[] | null {
     if (!this.roads.length) return null;
-    if (this.anchor && haversine(this.anchor, rider) < this.opts.reanchorM) return null;
-    this.anchor = rider;
-    this.anchorId = (this.anchorId % 255) + 1; // 1..255, 0 means "no roads"
-    this.frames = encodeRoads(this.anchorId, this.select(rider));
-    return this.frames;
+    if (!this.anchor) {
+      // setRoads() cleared the anchor, so a fresh street set has arrived: publish it.
+      this.anchor = rider;
+      this.anchorId = (this.anchorId % 255) + 1; // 1..255, 0 means "no roads"
+      this.selected = this.select(rider);
+      this.frames = encodeRoads(this.anchorId, this.selected);
+      return this.frames;
+    }
+    // Anchors are issued only on fresh data, so if the rider outruns the set the device is holding
+    // (no network, say) drop it rather than re-anchoring off stale streets. pose() then reports
+    // anchor 0 and the device stops drawing them, per docs/protocol.md.
+    if (haversine(this.anchor, rider) > this.opts.radiusM) {
+      this.roads = [];
+      this.selected = [];
+      this.frames = [];
+      this.anchor = null; // the counter keeps its value; the next set gets the next id
+    }
+    return null;
   }
 
   /** Rider pose in the current anchor frame, for the NAV message. */
@@ -72,6 +102,27 @@ export class RoadMap {
     if (!this.anchor) return { anchorId: 0, poseX: 0, poseY: 0, headingCdeg };
     const p = toLocal(this.anchor, rider);
     return { anchorId: this.anchorId, poseX: Math.round(p.x * 10), poseY: Math.round(p.y * 10), headingCdeg };
+  }
+
+  /**
+   * The current street set rotated into the rider's heading-up frame, so the phone can draw the same
+   * picture as the device. This deliberately goes through pose() and the offset-then-rotate of
+   * docs/protocol.md rather than projecting straight from lat/lon, so it inherits the device's decimeter
+   * pose quantisation and shows what the display is actually drawing.
+   */
+  riderFrame(rider: LatLon, headingDeg: number): RiderPoint[][] {
+    if (!this.anchor || !this.selected.length) return [];
+    const { poseX, poseY, headingCdeg } = this.pose(rider, headingDeg);
+    const h = ((headingCdeg / 100) * Math.PI) / 180;
+    const cos = Math.cos(h);
+    const sin = Math.sin(h);
+    return this.selected.map((road) =>
+      road.map((p) => {
+        const e = p.x - poseX / 10;
+        const n = p.y - poseY / 10;
+        return { x: e * cos - n * sin, y: e * sin + n * cos };
+      }),
+    );
   }
 
   /** Streets near the anchor, clipped to the radius, simplified, nearest first, within the point budget. */

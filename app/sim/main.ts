@@ -72,7 +72,8 @@ const session = new NavSession({
   // Demo routes are synthetic, so a "reroute" leads back onto the same road after a short network delay.
   fetchRoute: () => new Promise((res) => setTimeout(() => res(route), 700)),
   // Mock of the OpenStreetMap corridor fetch: the demo roads come with generated side streets.
-  fetchRoads: async () => demo.sideRoads,
+  // The demo routes ship generated side streets, so no network and no tile decoding here.
+  fetchStreets: async () => demo.sideRoads,
   phoneBatteryPct: () => 64,
   tzOffsetMin: () => tz,
 });

@@ -1,5 +1,6 @@
 // Route model + GraphHopper response parsing. Pure TS.
 import { LatLon, bearing, haversine, interpolate } from './geo';
+import { decodePolyline } from './polyline';
 import { Maneuver } from './proto';
 
 export interface Instruction {
@@ -102,6 +103,112 @@ export function makeRoute(points: LatLon[], instructions: InstructionSpec[] = []
 }
 
 /** Index i such that cum[i] <= d < cum[i+1] (clamped). */
+/**
+ * Valhalla maneuver `type` → protocol maneuver. Values are from the Type enum in Valhalla's
+ * proto/descriptors/directions.proto; anything unmapped (transit, lifts, steps) falls back to STRAIGHT.
+ */
+export function maneuverFromValhallaType(type: number): Maneuver {
+  switch (type) {
+    case 1: // kStart
+    case 2: // kStartRight
+    case 3: // kStartLeft
+      return Maneuver.DEPART;
+    case 4: // kDestination
+    case 5: // kDestinationRight
+    case 6: // kDestinationLeft
+      return Maneuver.ARRIVE;
+    case 9: // kSlightRight
+      return Maneuver.SLIGHT_RIGHT;
+    case 10: // kRight
+      return Maneuver.RIGHT;
+    case 11: // kSharpRight
+      return Maneuver.SHARP_RIGHT;
+    case 12: // kUturnRight
+      return Maneuver.UTURN_RIGHT;
+    case 13: // kUturnLeft
+      return Maneuver.UTURN_LEFT;
+    case 14: // kSharpLeft
+      return Maneuver.SHARP_LEFT;
+    case 15: // kLeft
+      return Maneuver.LEFT;
+    case 16: // kSlightLeft
+      return Maneuver.SLIGHT_LEFT;
+    case 18: // kRampRight
+    case 20: // kExitRight
+    case 23: // kStayRight
+      return Maneuver.KEEP_RIGHT;
+    case 19: // kRampLeft
+    case 21: // kExitLeft
+    case 24: // kStayLeft
+      return Maneuver.KEEP_LEFT;
+    case 26: // kRoundaboutEnter
+      return Maneuver.ROUNDABOUT;
+    default:
+      // kNone, kBecomes, kContinue, kRampStraight, kStayStraight, kMerge, kRoundaboutExit, transit…
+      return Maneuver.STRAIGHT;
+  }
+}
+
+export interface ValhallaManeuver {
+  type: number;
+  instruction?: string;
+  street_names?: string[];
+  length: number; // km (we always request units=kilometers)
+  time: number; // seconds
+  begin_shape_index: number;
+  roundabout_exit_count?: number;
+}
+
+export interface ValhallaTrip {
+  legs: { shape: string; maneuvers: ValhallaManeuver[] }[];
+  summary: { length: number; time: number };
+}
+
+/**
+ * Build a Route from a Valhalla trip. Legs are concatenated; each leg's shape is an encoded polyline at
+ * precision 6. No speed limits: Valhalla's /route response carries none, so `maxSpeed` stays empty and
+ * the device shows "unknown" (limit_kmh 0).
+ */
+export function routeFromValhalla(trip: ValhallaTrip): Route {
+  const points: LatLon[] = [];
+  const instructions: Instruction[] = [];
+  const legOffsets: number[] = [];
+
+  for (const leg of trip.legs) {
+    const shape = decodePolyline(leg.shape);
+    legOffsets.push(points.length);
+    // Legs share their joining point; drop the duplicate.
+    points.push(...(points.length && shape.length ? shape.slice(1) : shape));
+  }
+
+  const cum = cumulative(points);
+  trip.legs.forEach((leg, li) => {
+    const base = legOffsets[li];
+    for (const m of leg.maneuvers) {
+      const idx = Math.min(points.length - 1, Math.max(0, base + m.begin_shape_index - (li > 0 ? 1 : 0)));
+      instructions.push({
+        atM: cum[idx],
+        maneuver: maneuverFromValhallaType(m.type),
+        exit: m.roundabout_exit_count ?? 0,
+        street: m.street_names?.[0] ?? '',
+        text: m.instruction ?? '',
+        timeMs: Math.round(m.time * 1000),
+        distanceM: Math.round(m.length * 1000),
+      });
+    }
+  });
+  instructions.sort((a, b) => a.atM - b.atM);
+
+  return {
+    points,
+    cum,
+    lengthM: Math.round(trip.summary.length * 1000),
+    timeMs: Math.round(trip.summary.time * 1000),
+    instructions,
+    maxSpeed: [],
+  };
+}
+
 export function segmentAt(route: Route, d: number): number {
   const { cum } = route;
   let lo = 0, hi = cum.length - 2;

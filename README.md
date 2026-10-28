@@ -6,8 +6,8 @@ badges warning of sharp bends. The phone does the routing, GPS and map-data work
 frames over BLE; the display only draws.
 
 - **Display:** Waveshare ESP32-S3-Touch-LCD-1.28(-B): 240×240 GC9A01, CST816S touch, ESP-IDF + LVGL 9.
-- **Phone:** React Native (Expo SDK 58) app for Android and iOS, using GraphHopper for routing and
-  geocoding, and OpenStreetMap (Overpass) for the streets around you.
+- **Phone:** React Native (Expo SDK 58) app for Android and iOS, using Valhalla for motorcycle routing,
+  GraphHopper for geocoding, and OpenStreetMap vector tiles for the streets around you.
 - **Protocol:** [`docs/protocol.md`](docs/protocol.md), with shared test vectors in `proto-vectors/`.
 
 ```
@@ -57,7 +57,7 @@ sh firmware/test/host/run.sh
 ```sh
 cd app
 npm install
-cp .env.example .env.local      # then put your GraphHopper API key in it (free at graphhopper.com)
+cp .env.example .env.local      # GraphHopper API key, for geocoding (free at graphhopper.com)
 npm test                        # nav engine, protocol, session tests
 npx expo run:android            # or run:ios, or: npx eas-cli build --profile development
 ```
@@ -70,6 +70,27 @@ Expo Go won't work.
 To try the display without hardware, run `npm run build:sim` and open `app/sim/dist/openbee-display-sim.html`
 in a browser. It runs the real nav engine and protocol, and draws the screen with a canvas port of
 `ui.c`.
+
+### Routing
+
+Routes come from Valhalla on the public FOSSGIS instance with the **motorcycle** costing model. Each
+search queries two costings in parallel — a quick one and a curvy one that stays off motorways and
+tolls — then merges, de-duplicates and sorts them, so the route list on the search screen *is* the
+choice. There is no routing preference to set, and nothing that can disagree with the route you picked.
+The list marks the quickest option and the bendiest (turns per km); it hides itself when there is only
+one option to choose from.
+
+On a 180 km run that merge is the difference between one route and two: 180.8 km in 298 min by the
+highway, or 211.1 km in 585 min with 54 turns instead of 37.
+
+GraphHopper's free tier can do neither half of this: it refuses both the motorcycle profile (`car, bike,
+foot` only) and alternatives (*"Free packages cannot use flexible mode"*), so it is kept only as a
+single-route fallback. Mid-ride rerouting asks for the quick costing and no alternatives — a reroute
+should get you back on track, not hand you a back road.
+
+Valhalla's route response carries no speed limits, so the speed-limit field is sent as 0 ("unknown")
+and the display leaves it blank. They are recoverable from Valhalla's `trace_attributes` endpoint at the
+cost of one extra request per route, if that is ever worth it.
 
 ### Testing without riding
 
@@ -87,7 +108,10 @@ Run `npm run gen:vectors` in `app/`, then run both test suites (`npm test` and `
 - **Notification forwarding isn't built yet.** It will use an Android `NotificationListenerService`
   module on the phone and ANCS on the device for iPhone.
 - Street names render in Latin script only (the Montserrat fonts).
-- Map streets come from the public Overpass API, which is rate limited. They're fetched for the first
-  60 km of a route when the ride starts. Without network access the map shows only your route.
+- Map streets come from OpenFreeMap vector tiles (z14, no API key), fetched per `ROADS` anchor — about
+  two tiles and under a second for the 700 m around you — and cached. Tiles ahead on the route are
+  warmed in the background so a signal gap doesn't blank the map. Overpass is kept as a fallback, tried
+  across several mirrors; the main instance is chronically overloaded and answers 502 when its dispatcher
+  has no free slots. Without network access the map shows only your route, and the ride screen says why.
 - The BLE link is unencrypted, with no bonding.
 - Power, mounting and weatherproofing are still open.

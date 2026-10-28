@@ -17,6 +17,9 @@ function grid(lengthM = 3000) {
   return roads;
 }
 
+/** Let a queued street fetch resolve: the session fetches per anchor, so anchors advance on await. */
+const settle = () => new Promise((r) => setImmediate(r));
+
 const roadsOf = (frames: Uint8Array[]) =>
   frames.flatMap((f) => {
     const d = decode(f);
@@ -50,13 +53,16 @@ describe('simplify', () => {
 });
 
 describe('RoadMap', () => {
-  it('issues a new anchor only after moving 300 m, with a matching pose', () => {
+  it('issues an anchor when fresh streets arrive, not merely on distance', () => {
     const rm = new RoadMap();
     expect(rm.update(START)).toBeNull(); // no streets yet
+    expect(rm.needsAnchor(START)).toBe(true);
+
     rm.setRoads(grid());
     const first = rm.update(START)!;
     expect(first.length).toBeGreaterThan(0);
     expect(rm.pose(START, 0)).toEqual({ anchorId: 1, poseX: 0, poseY: 0, headingCdeg: 0 });
+    expect(rm.needsAnchor(START)).toBe(false);
 
     const p250 = destination(START, 0, 250);
     expect(rm.update(p250)).toBeNull();
@@ -67,9 +73,40 @@ describe('RoadMap', () => {
     expect(pose.poseY).toBeLessThan(2510);
     expect(pose.headingCdeg).toBe(0); // wraps 36000 → 0
 
+    // Past the reanchor distance the session is told to fetch, but the anchor must not move until the
+    // new streets actually land: re-anchoring off the old set would retransmit it for nothing.
     const p320 = destination(START, 0, 320);
+    expect(rm.needsAnchor(p320)).toBe(true);
+    expect(rm.update(p320)).toBeNull();
+    expect(rm.pose(p320, 90).anchorId).toBe(1);
+
+    rm.setRoads(grid()); // fetch landed
     expect(rm.update(p320)).not.toBeNull();
     expect(rm.pose(p320, 90).anchorId).toBe(2);
+  });
+
+  it('drops the street set when the rider outruns it, so the device stops drawing stale streets', () => {
+    const rm = new RoadMap();
+    rm.setRoads(grid(5000));
+    rm.update(START);
+    expect(rm.pose(START, 0).anchorId).toBe(1);
+
+    // Still inside the kept radius: the set stays on screen even though a fetch is due.
+    const inside = destination(START, 0, 600);
+    expect(rm.update(inside)).toBeNull();
+    expect(rm.pose(inside, 0).anchorId).toBe(1);
+
+    // Beyond it, with no fresh streets: the set is dropped and pose reports "no roads".
+    const beyond = destination(START, 0, 900);
+    expect(rm.update(beyond)).toBeNull();
+    expect(rm.pose(beyond, 0).anchorId).toBe(0);
+    expect(rm.riderFrame(beyond, 0)).toEqual([]);
+    expect(rm.hasRoads).toBe(false);
+
+    // And the next set gets a fresh id rather than reusing 1.
+    rm.setRoads(grid(5000));
+    expect(rm.update(beyond)).not.toBeNull();
+    expect(rm.pose(beyond, 0).anchorId).toBe(2);
   });
 
   it('keeps only streets near the anchor and within the point budget', () => {
@@ -84,6 +121,36 @@ describe('RoadMap', () => {
   });
 });
 
+describe('RoadMap.riderFrame', () => {
+  it('is empty until an anchor has been issued', () => {
+    const rm = new RoadMap();
+    expect(rm.riderFrame(START, 0)).toEqual([]);
+    rm.setRoads(grid());
+    expect(rm.riderFrame(START, 0)).toEqual([]); // setRoads alone does not anchor
+    rm.update(START);
+    expect(rm.riderFrame(START, 0).length).toBeGreaterThan(0);
+  });
+
+  it('rotates streets into the heading-up frame like draw_streets() on the device', () => {
+    const rm = new RoadMap();
+    rm.setRoads(grid());
+    rm.update(START);
+
+    // riderFrame preserves the order of the anchor set, so the same index is the same street.
+    const north = rm.riderFrame(START, 0);
+    const east = rm.riderFrame(START, 90);
+    const spread = (r: { x: number; y: number }[], k: 'x' | 'y') => Math.max(...r.map((p) => Math.abs(p[k])));
+
+    // Facing north, the east-west street through the anchor lies across the view: wide in x, flat in y.
+    const i = north.findIndex((r) => spread(r, 'y') < 5 && spread(r, 'x') > 150);
+    expect(i).toBeGreaterThanOrEqual(0);
+
+    // Facing east, that same street now runs ahead and behind the rider: wide in y, flat in x.
+    expect(spread(east[i], 'y')).toBeGreaterThan(150);
+    expect(spread(east[i], 'x')).toBeLessThan(5);
+  });
+});
+
 describe('NavSession with map streets', () => {
   it('sends ROADS before the NAV frame that refers to them, and replays them on reconnect', async () => {
     const b = new PathBuilder(START, 0).straight(1500);
@@ -95,19 +162,18 @@ describe('NavSession with map streets', () => {
     const s = new NavSession({
       send: (f) => frames.push(f),
       fetchRoute: async () => route,
-      fetchRoads: async () => grid(),
+      fetchStreets: async () => grid(),
       phoneBatteryPct: () => null,
       tzOffsetMin: () => 0,
     });
     s.start(route, { lat: 0, lon: 0 });
-    await Promise.resolve();
-    await Promise.resolve();
 
     const seenAnchors = new Set<number>();
     let navWithRoads = 0;
     for (const fix of simulateRide(route, { speedMps: 15, intervalMs: 500, startMs: 0 })) {
       const before = frames.length;
       s.onFix(fix);
+      await settle(); // a street fetch queued by this fix lands before the next one
       for (const f of frames.slice(before)) {
         const d = decode(f);
         if (d.type === MsgType.ROADS) seenAnchors.add(d.msg.anchorId);
@@ -126,5 +192,78 @@ describe('NavSession with map streets', () => {
     expect(types[0]).toBe(MsgType.STATE);
     expect(types).toContain(MsgType.ROADS);
     expect(types.indexOf(MsgType.ROADS)).toBeLessThan(types.indexOf(MsgType.NAV));
+  });
+
+  it('mirrors the streets it sent on the session view', async () => {
+    const b = new PathBuilder(START, 0).straight(600);
+    const route = makeRoute(b.points, [
+      { atIndex: 0, maneuver: Maneuver.DEPART, exit: 0, street: 'A', text: '', distanceM: 600, timeMs: 60_000 },
+      { atIndex: b.index, maneuver: Maneuver.ARRIVE, exit: 0, street: '', text: '', distanceM: 0, timeMs: 0 },
+    ]);
+    const s = new NavSession({
+      send: () => {},
+      fetchRoute: async () => route,
+      fetchStreets: async () => grid(),
+      phoneBatteryPct: () => null,
+      tzOffsetMin: () => 0,
+    });
+    s.start(route, { lat: 0, lon: 0 });
+    expect(s.getView().streets).toEqual([]); // nothing fetched until a fix gives us a position
+
+    // First fix queues the fetch; it lands on await; the next fix publishes the anchor.
+    s.onFix({ lat: START.lat, lon: START.lon, speedMps: 10, accuracyM: 5, timeMs: 0 });
+    expect(s.getView().streets).toEqual([]);
+    await settle();
+    s.onFix({ lat: START.lat, lon: START.lon, speedMps: 10, accuracyM: 5, timeMs: 500 });
+    const streets = s.getView().streets;
+    expect(streets.length).toBeGreaterThan(0);
+    expect(s.getView().roadsError).toBeNull();
+    // Heading north up a north-bound route: the cross streets run across the view.
+    expect(streets.some((r) => Math.max(...r.map((q) => Math.abs(q.x))) > 150)).toBe(true);
+  });
+
+  it('surfaces a street fetch failure instead of swallowing it', async () => {
+    const b = new PathBuilder(START, 0).straight(600);
+    const route = makeRoute(b.points, [
+      { atIndex: 0, maneuver: Maneuver.DEPART, exit: 0, street: 'A', text: '', distanceM: 600, timeMs: 60_000 },
+      { atIndex: b.index, maneuver: Maneuver.ARRIVE, exit: 0, street: '', text: '', distanceM: 0, timeMs: 0 },
+    ]);
+    const s = new NavSession({
+      send: () => {},
+      fetchRoute: async () => route,
+      fetchStreets: async () => {
+        throw new Error('Map streets unavailable (502)');
+      },
+      phoneBatteryPct: () => null,
+      tzOffsetMin: () => 0,
+    });
+    expect(s.getView().roadsError).toBeNull();
+    s.start(route, { lat: 0, lon: 0 });
+    s.onFix({ lat: START.lat, lon: START.lon, speedMps: 10, accuracyM: 5, timeMs: 0 });
+    await settle();
+    expect(s.getView().roadsError).toBe('Map streets unavailable (502)');
+    expect(s.getView().streets).toEqual([]);
+
+    s.stop();
+    expect(s.getView().roadsError).toBeNull();
+  });
+
+  it('reports an empty street set distinctly from a failure', async () => {
+    const b = new PathBuilder(START, 0).straight(600);
+    const route = makeRoute(b.points, [
+      { atIndex: 0, maneuver: Maneuver.DEPART, exit: 0, street: 'A', text: '', distanceM: 600, timeMs: 60_000 },
+      { atIndex: b.index, maneuver: Maneuver.ARRIVE, exit: 0, street: '', text: '', distanceM: 0, timeMs: 0 },
+    ]);
+    const s = new NavSession({
+      send: () => {},
+      fetchRoute: async () => route,
+      fetchStreets: async () => [],
+      phoneBatteryPct: () => null,
+      tzOffsetMin: () => 0,
+    });
+    s.start(route, { lat: 0, lon: 0 });
+    s.onFix({ lat: START.lat, lon: START.lon, speedMps: 10, accuracyM: 5, timeMs: 0 });
+    await settle();
+    expect(s.getView().roadsError).toBe('No map streets near this part of the route');
   });
 });

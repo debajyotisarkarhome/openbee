@@ -6,17 +6,23 @@ import {
   NavState, NotifMsg, TripMsg,
   encodeNav, encodeNotif, encodeState, encodeTrip,
 } from './proto';
-import { RoadMap } from './roads';
+import { RiderPoint, RoadMap } from './roads';
 import { Route } from './route';
 
 export interface SessionDeps {
   send(frame: Uint8Array): void;
   fetchRoute(from: LatLon, to: LatLon): Promise<Route>;
-  /** Streets along the route corridor for the device's map view (optional: without it the map shows only the route). */
-  fetchRoads?(route: Route): Promise<LatLon[][]>;
+  /**
+   * Streets within radiusM of center, for one ROADS anchor (optional: without it the map shows only the
+   * route). Called just in time as each anchor is issued, so it must be cheap.
+   */
+  fetchStreets?(center: LatLon, radiusM: number): Promise<LatLon[][]>;
   phoneBatteryPct(): number | null;
   tzOffsetMin(): number;
 }
+
+/** Radius of streets requested per anchor. Matches RoadMap's default keep-radius. */
+export const STREET_RADIUS_M = 700;
 
 export const NAV_INTERVAL_MS = 500;
 export const TRIP_INTERVAL_MS = 1000;
@@ -28,6 +34,10 @@ export interface SessionView {
   snapshot: NavSnapshot | null;
   lastFix: Fix | null;
   error: string | null;
+  /** Surrounding streets in the rider's heading-up frame — the same set the device is drawing. */
+  streets: RiderPoint[][];
+  /** Why the map streets are missing, if they are. Navigation still works without them. */
+  roadsError: string | null;
 }
 
 export class NavSession {
@@ -43,6 +53,9 @@ export class NavSession {
   private error: string | null = null;
   private roads = new RoadMap();
   private roadsFor: Route | null = null;
+  private streets: RiderPoint[][] = [];
+  private roadsError: string | null = null;
+  private streetFetch: Promise<void> | null = null;
   private listeners = new Set<() => void>();
   private view: SessionView;
 
@@ -71,6 +84,8 @@ export class NavSession {
       snapshot: this.snapshot,
       lastFix: this.lastFix,
       error: this.error,
+      streets: this.streets,
+      roadsError: this.roadsError,
     };
   }
 
@@ -83,19 +98,37 @@ export class NavSession {
     this.lastNavAt = this.lastTripAt = -Infinity;
     this.lastManeuverKey = '';
     this.roads.clear();
-    void this.loadRoads(route);
+    this.streets = [];
+    this.roadsError = null;
+    this.roadsFor = route;
     this.setState(NavState.NAVIGATING);
   }
 
-  private async loadRoads(route: Route) {
-    if (!this.deps.fetchRoads) return;
-    this.roadsFor = route;
-    try {
-      const roads = await this.deps.fetchRoads(route);
-      if (this.roadsFor === route && this.engine) this.roads.setRoads(roads);
-    } catch {
-      // Map streets are a nice-to-have; navigation works without them.
-    }
+  /**
+   * Fetch streets for the next anchor, once. Kicked off from onFix the moment the rider leaves the
+   * current anchor's area; the next fix issues the anchor and sends the frames.
+   */
+  private maybeFetchStreets(center: LatLon) {
+    if (!this.deps.fetchStreets || this.streetFetch || !this.roads.needsAnchor(center)) return;
+    const route = this.roadsFor;
+    const fetchStreets = this.deps.fetchStreets;
+    this.streetFetch = fetchStreets(center, STREET_RADIUS_M)
+      .then((streets) => {
+        if (this.roadsFor !== route || !this.engine) return;
+        this.roads.setRoads(streets);
+        this.roadsError = streets.length ? null : 'No map streets near this part of the route';
+        this.emit();
+      })
+      .catch((e: Error) => {
+        // Navigation works without streets, but stay loud: a silent failure here looks identical to a
+        // stretch of route with no streets near it.
+        if (this.roadsFor !== route) return;
+        this.roadsError = e.message;
+        this.emit();
+      })
+      .finally(() => {
+        this.streetFetch = null;
+      });
   }
 
   stop() {
@@ -104,6 +137,8 @@ export class NavSession {
     this.snapshot = null;
     this.roads.clear();
     this.roadsFor = null;
+    this.streets = [];
+    this.roadsError = null;
     this.setState(NavState.IDLE);
   }
 
@@ -142,6 +177,10 @@ export class NavSession {
     // Streets first, so the device has the anchor set before a NAV frame refers to it.
     this.roads.update(s.pose.origin)?.forEach((f) => this.deps.send(f));
     Object.assign(s.nav, this.roads.pose(s.pose.origin, s.pose.headingDeg));
+    this.streets = this.roads.riderFrame(s.pose.origin, s.pose.headingDeg);
+    // Then queue the *next* anchor's streets. After update(), so an anchor issued on this very fix is
+    // not immediately treated as stale and re-fetched.
+    this.maybeFetchStreets(s.pose.origin);
     this.snapshot = s;
 
     if (s.needsReroute && this.dest) void this.reroute(fix);
@@ -181,7 +220,7 @@ export class NavSession {
     try {
       const route = await this.deps.fetchRoute(from, this.dest);
       this.engine?.setRoute(route);
-      void this.loadRoads(route);
+      this.roadsFor = route;
       this.error = null;
     } catch (e) {
       this.error = `Reroute failed: ${(e as Error).message}`;
