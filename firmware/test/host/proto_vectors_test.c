@@ -73,6 +73,13 @@ static int dump(const proto_msg_t *m, char *o, size_t cap)
         }
         break;
     }
+    case MSG_MEDIA:
+        P("type=MEDIA\nstate=%u\nvolume_pct=%u\ntitle=%s\nartist=%s\n", m->u.media.state, m->u.media.volume_pct,
+          m->u.media.title, m->u.media.artist);
+        break;
+    case MSG_MEDIA_CMD:
+        P("type=MEDIA_CMD\ncmd=%u\n", m->u.media_cmd);
+        break;
     case MSG_DEV_STATUS: {
         const dev_status_msg_t *v = &m->u.dev_status;
         P("type=DEV_STATUS\nbatt_pct=%u\nbatt_mv=%u\ncharging=%u\nfw_ver=%u\n", v->batt_pct, v->batt_mv, v->charging,
@@ -120,7 +127,7 @@ static void test_vectors(const char *dir)
         count++;
     }
     closedir(d);
-    CHECK(count >= 11);
+    CHECK(count >= 14);
     printf("vectors checked: %d\n", count);
 }
 
@@ -144,6 +151,21 @@ static void test_malformed(void)
     CHECK(!proto_decode(roads_bad_part, sizeof roads_bad_part, &m));
     CHECK(!proto_decode(roads_short, sizeof roads_short, &m));
     CHECK(!proto_decode(bad_ver, 3, &m));
+
+    // MEDIA: title 97 bytes (max 96), artist empty; then title empty, artist 65 bytes (max 64).
+    uint8_t media_bad[4 + 4 + 97 + 65];
+    size_t k = 0;
+    media_bad[k++] = 1; media_bad[k++] = MSG_MEDIA; media_bad[k++] = 0; media_bad[k++] = 0;
+    media_bad[k++] = 1; media_bad[k++] = 10; media_bad[k++] = 97;
+    memset(media_bad + k, 'a', 97); k += 97;
+    media_bad[k++] = 0;
+    media_bad[2] = (uint8_t)(k - 4);
+    CHECK(!proto_decode(media_bad, k, &m));
+    k = 4;
+    media_bad[k++] = 1; media_bad[k++] = 10; media_bad[k++] = 0; media_bad[k++] = 65;
+    memset(media_bad + k, 'b', 65); k += 65;
+    media_bad[2] = (uint8_t)(k - 4);
+    CHECK(!proto_decode(media_bad, k, &m));
 }
 
 static void test_dev_status_encode(const char *dir)
@@ -157,12 +179,23 @@ static void test_dev_status_encode(const char *dir)
     CHECK(n == wn && memcmp(buf, want, n) == 0);
 }
 
+static void test_media_cmd_encode(const char *dir)
+{
+    uint8_t buf[16];
+    char want[16], path[512];
+    size_t n = proto_encode_media_cmd(MEDIA_CMD_NEXT, buf);
+    snprintf(path, sizeof path, "%s/media_cmd_next.bin", dir);
+    size_t wn = read_file(path, want, sizeof want);
+    CHECK(n == 5 && n == wn && memcmp(buf, want, n) == 0);
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "../../../proto-vectors";
     test_vectors(dir);
     test_malformed();
     test_dev_status_encode(dir);
+    test_media_cmd_encode(dir);
     if (failures) {
         printf("%d FAILURE(S)\n", failures);
         return 1;

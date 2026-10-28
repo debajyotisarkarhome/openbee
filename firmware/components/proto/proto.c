@@ -44,6 +44,21 @@ static void rd_str(reader_t *r, char *dst)
     r->left -= n;
 }
 
+// Like rd_str but fails when the string is longer than `max` (dst must hold max + 1).
+static void rd_str_max(reader_t *r, char *dst, size_t max)
+{
+    uint8_t n = rd_u8(r);
+    if (!r->ok || n > max || n > r->left) {
+        r->ok = false;
+        dst[0] = '\0';
+        return;
+    }
+    memcpy(dst, r->p, n);
+    dst[n] = '\0';
+    r->p += n;
+    r->left -= n;
+}
+
 bool proto_decode(const uint8_t *frame, size_t len, proto_msg_t *out)
 {
     if (len < 4 || frame[0] != PROTO_VER) {
@@ -127,6 +142,17 @@ bool proto_decode(const uint8_t *frame, size_t len, proto_msg_t *out)
         }
         break;
     }
+    case MSG_MEDIA: {
+        media_msg_t *m = &out->u.media;
+        m->state = rd_u8(&r);
+        m->volume_pct = rd_u8(&r);
+        rd_str_max(&r, m->title, PROTO_MEDIA_TITLE_MAX);
+        rd_str_max(&r, m->artist, PROTO_MEDIA_ARTIST_MAX);
+        break;
+    }
+    case MSG_MEDIA_CMD:
+        out->u.media_cmd = rd_u8(&r);
+        break;
     case MSG_DEV_STATUS: {
         dev_status_msg_t *m = &out->u.dev_status;
         m->batt_pct = rd_u8(&r);
@@ -153,4 +179,14 @@ size_t proto_encode_dev_status(const dev_status_msg_t *m, uint8_t *buf)
     buf[7] = m->charging ? 1 : 0;
     buf[8] = m->fw_ver;
     return 9;
+}
+
+size_t proto_encode_media_cmd(uint8_t cmd, uint8_t *buf)
+{
+    buf[0] = PROTO_VER;
+    buf[1] = MSG_MEDIA_CMD;
+    buf[2] = 1;
+    buf[3] = 0;
+    buf[4] = cmd;
+    return 5;
 }

@@ -18,6 +18,9 @@ extern "C" {
 #define PROTO_UNKNOWN_DIST 0xFFFF
 #define PROTO_NO_INDEX 0xFF
 #define PROTO_UNKNOWN_BATT 0xFF
+#define PROTO_MEDIA_TITLE_MAX 96
+#define PROTO_MEDIA_ARTIST_MAX 64
+#define PROTO_UNKNOWN_VOLUME 0xFF
 
 typedef enum {
     MSG_NAV = 0x01,
@@ -25,7 +28,9 @@ typedef enum {
     MSG_NOTIF = 0x03,
     MSG_STATE = 0x04,
     MSG_ROADS = 0x05,
+    MSG_MEDIA = 0x06,
     MSG_DEV_STATUS = 0x81,
+    MSG_MEDIA_CMD = 0x82,
 } msg_type_t;
 
 typedef enum {
@@ -108,6 +113,23 @@ typedef struct {
     road_point_t pts[PROTO_MAX_ROAD_POINTS_PER_FRAME];
 } roads_msg_t;
 
+typedef enum { MEDIA_NONE = 0, MEDIA_PLAYING, MEDIA_PAUSED } media_state_t;
+
+typedef enum {
+    MEDIA_CMD_TOGGLE = 0,
+    MEDIA_CMD_NEXT,
+    MEDIA_CMD_PREV,
+    MEDIA_CMD_VOL_UP,
+    MEDIA_CMD_VOL_DOWN,
+} media_cmd_t;
+
+typedef struct {
+    uint8_t state;      // media_state_t
+    uint8_t volume_pct; // PROTO_UNKNOWN_VOLUME = unknown
+    char title[PROTO_MEDIA_TITLE_MAX + 1];
+    char artist[PROTO_MEDIA_ARTIST_MAX + 1];
+} media_msg_t;
+
 typedef struct {
     uint8_t batt_pct;
     uint16_t batt_mv;
@@ -123,6 +145,8 @@ typedef struct {
         notif_msg_t notif;
         uint8_t state;
         roads_msg_t roads;
+        media_msg_t media;
+        uint8_t media_cmd; // media_cmd_t
         dev_status_msg_t dev_status;
     } u;
 } proto_msg_t;
@@ -132,6 +156,9 @@ bool proto_decode(const uint8_t *frame, size_t len, proto_msg_t *out);
 
 /** Encode DEV_STATUS into buf (≥ 9 bytes). Returns frame length. */
 size_t proto_encode_dev_status(const dev_status_msg_t *m, uint8_t *buf);
+
+/** Encode MEDIA_CMD into buf (≥ 5 bytes). Returns frame length (5). */
+size_t proto_encode_media_cmd(uint8_t cmd, uint8_t *buf);
 
 #ifdef __cplusplus
 }
