@@ -31,6 +31,8 @@ static uint16_t s_eu_def, s_eu_val, s_eu_end, s_eu_cccd;
 static uint16_t s_rc_val;
 static bool s_subscribing;   // CCCD write + registration chain in flight
 static bool s_no_more_security; // security already requested (or failed) on this connection
+static bool s_encrypted_retry;  // already re-subscribed once after a security error on an encrypted link
+static bool s_media_reported;   // on_media was called on this connection
 static media_msg_t s_media;
 
 // Shared with ams_send/ams_active, which run in other tasks.
@@ -59,6 +61,8 @@ static void reset(uint16_t conn)
     s_rc_val = 0;
     s_subscribing = false;
     s_no_more_security = false;
+    s_encrypted_retry = false;
+    s_media_reported = false;
     memset(&s_media, 0, sizeof s_media);
     s_media.state = MEDIA_NONE;
     s_media.volume_pct = PROTO_UNKNOWN_VOLUME;
@@ -70,6 +74,20 @@ static bool is_security_error(int status)
            status == BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_ENC);
 }
 
+/** An ATT error response from the iPhone, as opposed to a host error (not connected, timeout, no memory...). */
+static bool is_att_error(int status)
+{
+    return status > BLE_HS_ERR_ATT_BASE && status < BLE_HS_ERR_ATT_BASE + 0x100;
+}
+
+static bool link_encrypted(void)
+{
+    struct ble_gap_conn_desc desc;
+    return ble_gap_conn_find(s_conn, &desc) == 0 && desc.sec_state.encrypted;
+}
+
+static void subscribe(void);
+
 /** End the subscribe chain after a failed step. A security error asks iOS to pair, once per connection;
  *  the resulting ENC_CHANGE restarts the chain. */
 static void subscribe_failed(const char *step, int status)
@@ -77,6 +95,17 @@ static void subscribe_failed(const char *step, int status)
     s_subscribing = false;
     if (!is_security_error(status)) {
         ESP_LOGW(TAG, "%s failed: %d", step, status);
+        return;
+    }
+    if (link_encrypted()) {
+        // The write went out just before encryption completed (a bonded iPhone reconnecting), and the
+        // ENC_CHANGE that would have re-subscribed was skipped because this chain was in flight. Retry once.
+        if (s_encrypted_retry) {
+            ESP_LOGW(TAG, "%s rejected on an encrypted link: %d", step, status);
+            return;
+        }
+        s_encrypted_retry = true;
+        subscribe();
         return;
     }
     if (s_no_more_security) {
@@ -94,11 +123,11 @@ static int track_registered(uint16_t conn, const struct ble_gatt_error *error, s
         return 0;
     }
     if (error->status != 0) {
-        if (is_security_error(error->status)) {
+        if (!is_att_error(error->status) || is_security_error(error->status)) {
             subscribe_failed("track register", error->status);
             return 0;
         }
-        ESP_LOGW(TAG, "track register failed: %d", error->status);
+        ESP_LOGW(TAG, "track register rejected: %d", error->status); // the CCCD is set; carry on
     }
     s_subscribing = false;
     atomic_store(&s_rc_target, ((unsigned)s_conn << 16) | s_rc_val);
@@ -113,11 +142,11 @@ static int player_registered(uint16_t conn, const struct ble_gatt_error *error, 
         return 0;
     }
     if (error->status != 0) {
-        if (is_security_error(error->status)) {
+        if (!is_att_error(error->status) || is_security_error(error->status)) {
             subscribe_failed("player register", error->status);
             return 0;
         }
-        ESP_LOGW(TAG, "player register failed: %d", error->status);
+        ESP_LOGW(TAG, "player register rejected: %d", error->status); // the CCCD is set; carry on
     }
     static const uint8_t track[] = {AMS_ENTITY_TRACK, AMS_TRACK_ARTIST, AMS_TRACK_TITLE};
     int rc = ble_gattc_write_flat(conn, s_eu_val, track, sizeof track, track_registered, arg);
@@ -280,14 +309,18 @@ void ams_on_notify_rx(uint16_t conn, uint16_t attr, struct os_mbuf *om)
         return;
     }
     if (ams_parse_entity_update(buf, len, &s_media) && s_on_media) {
+        s_media_reported = true;
         s_on_media(&s_media);
     }
 }
 
 void ams_on_disconnect(void)
 {
+    // Only clear what AMS itself put on screen: on Android a NONE here could land after (and overwrite) a
+    // fresh phone MEDIA frame. main.c clears the UI on disconnect anyway.
+    bool served = atomic_load(&s_active) || s_media_reported;
     reset(BLE_HS_CONN_HANDLE_NONE);
-    if (s_on_media) {
+    if (served && s_on_media) {
         s_on_media(&s_media);
     }
 }

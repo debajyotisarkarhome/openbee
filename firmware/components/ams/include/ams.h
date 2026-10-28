@@ -28,7 +28,7 @@ void ams_on_enc_change(uint16_t conn, int status);
 /** A notification arrived from the phone's GATT server. */
 void ams_on_notify_rx(uint16_t conn, uint16_t attr, struct os_mbuf *om);
 
-/** The phone disconnected: forget everything and report "nothing playing". */
+/** The phone disconnected: forget everything; report "nothing playing" if AMS had served this connection. */
 void ams_on_disconnect(void);
 
 /** True once subscribed to Entity Update on this connection (any task). */
