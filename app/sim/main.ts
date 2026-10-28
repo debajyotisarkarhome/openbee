@@ -1,11 +1,14 @@
 // Browser simulator: real OpenBee phone pipeline (NavSession → protocol frames) feeding a canvas port of the device UI.
 import { destination, toLocal } from '../src/core/geo';
-import { CurveClass, Maneuver, MsgType, NavState, NotifKind, decode } from '../src/core/proto';
+import {
+  CurveClass, Maneuver, MediaCmd, MediaMsg, MediaState, MsgType, NavState, NotifKind, decode, encodeMedia, encodeMediaCmd,
+} from '../src/core/proto';
 import { Route, bearingAt, pointAt } from '../src/core/route';
 import { NavSession } from '../src/core/session';
 import { curveClassAt } from '../src/core/shape';
 import {
-  BRIGHT_BTN_CY, BRIGHT_BTN_DX, BRIGHT_BTN_R, DisplayRenderer, TILE_SETTINGS, brightnessStep, fmtDistance, newDeviceState,
+  BRIGHT_BTN_CY, BRIGHT_BTN_DX, BRIGHT_BTN_R, DisplayRenderer, TILE_MEDIA, TILE_NAV, TILE_SETTINGS, brightnessStep, fmtDistance,
+  newDeviceState,
 } from './display';
 import { DEMO_ROUTES } from './routes';
 
@@ -66,7 +69,47 @@ function onFrame(f: Uint8Array) {
       dev.notif = m.msg;
       dev.notifAt = now;
       break;
+    case MsgType.MEDIA:
+      dev.media = m.msg;
+      break;
   }
+}
+
+// ---------- fake media player (stands in for the phone's MediaRelay) ----------
+const TRACKS: [string, string][] = [
+  ['Bohemian Rhapsody', 'Queen'], ['Hotel California', 'Eagles'], ['Stairway to Heaven', 'Led Zeppelin'],
+];
+const CMD_NAME = ['TOGGLE', 'NEXT', 'PREV', 'VOL_UP', 'VOL_DOWN'];
+let track = 0;
+const player: MediaMsg = { state: MediaState.PLAYING, volumePct: 60, title: TRACKS[0][0], artist: TRACKS[0][1] };
+const cmdLog: string[] = [];
+
+/** A device button press: MEDIA_CMD goes through the real codec, the fake player reacts and answers with MEDIA. */
+function onMediaCmd(cmd: MediaCmd) {
+  const f = encodeMediaCmd(cmd);
+  const m = decode(f);
+  if (m.type !== MsgType.MEDIA_CMD) return;
+  stats.counts.set(f[1], (stats.counts.get(f[1]) ?? 0) + 1);
+  cmdLog.push(CMD_NAME[m.msg.cmd] ?? `cmd ${m.msg.cmd}`);
+  if (cmdLog.length > 4) cmdLog.shift();
+  const vol = player.volumePct ?? 0;
+  switch (m.msg.cmd) {
+    case MediaCmd.TOGGLE:
+      player.state = player.state === MediaState.PLAYING ? MediaState.PAUSED : MediaState.PLAYING;
+      break;
+    case MediaCmd.NEXT:
+    case MediaCmd.PREV:
+      track = (track + (m.msg.cmd === MediaCmd.NEXT ? 1 : TRACKS.length - 1)) % TRACKS.length;
+      [player.title, player.artist] = TRACKS[track];
+      break;
+    case MediaCmd.VOL_UP:
+      player.volumePct = Math.min(100, vol + 10);
+      break;
+    case MediaCmd.VOL_DOWN:
+      player.volumePct = Math.max(0, vol - 10);
+      break;
+  }
+  onFrame(encodeMedia(player));
 }
 
 const session = new NavSession({
@@ -223,7 +266,7 @@ const MAN_TEXT: Record<number, string> = {
   [Maneuver.ARRIVE]: 'Arrive', [Maneuver.DEPART]: 'Depart',
 };
 const STATE_TEXT = ['Idle', 'Navigating', 'Rerouting', 'Arrived', 'GPS lost'];
-const TYPE_NAME: Record<number, string> = { 1: 'NAV', 2: 'TRIP', 3: 'NOTIF', 4: 'STATE', 5: 'ROADS' };
+const TYPE_NAME: Record<number, string> = { 1: 'NAV', 2: 'TRIP', 3: 'NOTIF', 4: 'STATE', 5: 'ROADS', 6: 'MEDIA', 0x82: 'MEDIA_CMD' };
 
 function readouts() {
   const view = session.getView();
@@ -241,7 +284,8 @@ function readouts() {
   stats.window = stats.window.filter((w) => now - w.t < 1000);
   const bps = stats.window.reduce((a, w) => a + w.n, 0);
   $('bt-rate').textContent = `${bps} B/s`;
-  $('bt-counts').textContent = [1, 5, 2, 4, 3].map((t) => `${TYPE_NAME[t]} ${stats.counts.get(t) ?? 0}`).join('  ·  ');
+  $('bt-counts').textContent = [1, 5, 2, 4, 3, 6].map((t) => `${TYPE_NAME[t]} ${stats.counts.get(t) ?? 0}`).join('  ·  ');
+  $('bt-cmds').textContent = cmdLog.length ? `${TYPE_NAME[0x82]} ${stats.counts.get(0x82)}: ${cmdLog.join(', ')}` : '—';
   const f = stats.lastNav;
   $('bt-size').textContent = f.length ? `${f.length} B (${dev.nav?.points.length ?? 0} road points)` : '—';
   $('bt-hex').textContent = f.length
@@ -290,6 +334,15 @@ $('ev-call').addEventListener('click', () =>
 $('ev-msg').addEventListener('click', () =>
   session.notify({ kind: NotifKind.MESSAGE, app: 'WhatsApp', title: 'Arjun', body: 'Reached the viewpoint, waiting near the tea stall' }));
 
+/** Pointer position in device px (0–240). */
+function devicePx(canvas: HTMLCanvasElement, e: PointerEvent): [number, number] {
+  const box = canvas.getBoundingClientRect();
+  return [((e.clientX - box.left) / box.width) * 240, ((e.clientY - box.top) / box.height) * 240];
+}
+const mediaHitAt = (canvas: HTMLCanvasElement, e: PointerEvent) =>
+  tileTarget === TILE_MEDIA && Math.abs(tile0 - TILE_MEDIA) < 0.01 ? renderers[0].mediaHit(...devicePx(canvas, e)) : null;
+const setMediaPressed = (cmd: MediaCmd | null) => renderers.forEach((r) => (r.mediaPressed = cmd));
+
 // Swipe between views like the touchscreen (drag), tap Trip/Status to go back to Nav.
 let dragging = false;
 let dragX0 = 0, tile0 = 0, moved = false, dragW = 300;
@@ -300,19 +353,22 @@ for (const canvas of canvases) {
     dragX0 = e.clientX;
     dragW = canvas.getBoundingClientRect().width;
     tile0 = tile;
+    setMediaPressed(mediaHitAt(canvas, e));
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
     if (!dragging) return;
     const dx = (e.clientX - dragX0) / dragW;
-    if (Math.abs(dx) > 0.03) moved = true;
+    if (Math.abs(dx) > 0.03) {
+      moved = true;
+      setMediaPressed(null);
+    }
     tile = Math.max(-0.15, Math.min(TILE_SETTINGS + 0.15, tile0 - dx));
   });
 }
 /** Taps on the Settings view hit its −/+ buttons (device px); anywhere else does nothing there, like ui.c. */
 function settingsTap(canvas: HTMLCanvasElement, e: PointerEvent) {
-  const box = canvas.getBoundingClientRect();
-  const x = ((e.clientX - box.left) / box.width) * 240, y = ((e.clientY - box.top) / box.height) * 240;
+  const [x, y] = devicePx(canvas, e);
   for (const dir of [-1, 1] as const) {
     if (Math.hypot(x - (120 + dir * BRIGHT_BTN_DX), y - BRIGHT_BTN_CY) <= BRIGHT_BTN_R) {
       dev.brightnessPct = brightnessStep(dev.brightnessPct, dir);
@@ -327,10 +383,15 @@ function applyBrightness() {
 const endDrag = (e?: PointerEvent) => {
   if (!dragging) return;
   dragging = false;
+  setMediaPressed(null);
   if (!moved) {
     if (tileTarget === TILE_SETTINGS) {
       if (e) settingsTap(e.currentTarget as HTMLCanvasElement, e);
-    } else if (tileTarget !== 0) tileTarget = 0;
+    } else if (tileTarget === TILE_MEDIA) {
+      // Buttons only: a near miss stays on the page (no tap-to-go-back, like ui.c).
+      const cmd = e ? mediaHitAt(e.currentTarget as HTMLCanvasElement, e) : null;
+      if (cmd != null) onMediaCmd(cmd);
+    } else if (tileTarget !== TILE_NAV) tileTarget = TILE_NAV;
   } else {
     const delta = tile - tile0;
     tileTarget = Math.max(0, Math.min(TILE_SETTINGS,
@@ -357,6 +418,7 @@ window.addEventListener('resize', () => { sizeCanvas(); drawOverview(); });
 sizeCanvas();
 applyBrightness();
 startRoute(0);
+onFrame(encodeMedia(player));
 setInterval(step, TICK_MS);
 setInterval(readouts, 250);
 void document.fonts?.ready.then(sizeCanvas);

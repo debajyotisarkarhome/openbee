@@ -1,6 +1,8 @@
 // Canvas port of firmware/components/ui/ui.c: same coordinates, colors, auto-zoom and arrow geometry.
 // It only consumes decoded protocol messages, exactly like the device.
-import { CurveClass, Maneuver, NavMsg, NavState, NotifKind, NotifMsg, RoadPoint, RoadsMsg, TripMsg } from '../src/core/proto';
+import {
+  CurveClass, Maneuver, MediaCmd, MediaMsg, MediaState, NavMsg, NavState, NotifKind, NotifMsg, RoadPoint, RoadsMsg, TripMsg,
+} from '../src/core/proto';
 
 const W = 240, CX = 120, RIDER_Y = 178, ROAD_TOP_Y = 18, ROAD_HALF_W = 100;
 const NOTIF_SHOW_MS = 5000, CURVE_WARN_MAX_M = 400;
@@ -25,17 +27,33 @@ export interface DeviceState {
   notifAt: number;
   deviceBattPct: number;
   brightnessPct: number;
+  media: MediaMsg;
 }
 
 export function newDeviceState(): DeviceState {
   return {
     connected: true, navState: NavState.IDLE, nav: null, trip: null, notif: null, notifAt: 0, deviceBattPct: 87,
-    brightnessPct: 80,
+    brightnessPct: 80, media: { state: MediaState.NONE, volumePct: null, title: '', artist: '' },
   };
 }
 
+/** Tile order, as in ui_init(): Nav, Media, Trip, Status, Settings. */
+export const TILE_NAV = 0, TILE_MEDIA = 1, TILE_TRIP = 2, TILE_STATUS = 3, TILE_SETTINGS = 4;
+
+/** Media view geometry (mirrors MEDIA_* and the media_button() calls in build_media() in ui.c). */
+const MEDIA_RING_INSET = 6, MEDIA_RING_W = 6, MEDIA_TITLE_Y = 44, MEDIA_TITLE_W = 130, MEDIA_ARTIST_Y = 68;
+const MEDIA_ARTIST_W = 120, MEDIA_ROW_Y = 120, MEDIA_VOL_Y = 190;
+const MEDIA_PRESSED_BG = '#0E2A36';
+const LINE_H_20 = 22, LINE_H_14 = 16; // lv_font_get_line_height of Montserrat 20 / 14
+const MEDIA_BUTTONS: { cx: number; cy: number; d: number; cmd: MediaCmd; primary?: boolean }[] = [
+  { cx: 54, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.PREV },
+  { cx: 120, cy: MEDIA_ROW_Y, d: 70, cmd: MediaCmd.TOGGLE, primary: true },
+  { cx: 186, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.NEXT },
+  { cx: 92, cy: MEDIA_VOL_Y, d: 44, cmd: MediaCmd.VOL_DOWN },
+  { cx: 148, cy: MEDIA_VOL_Y, d: 44, cmd: MediaCmd.VOL_UP },
+];
+
 /** Settings view geometry, shared with the simulator's tap handling (mirrors BRIGHT_* in ui.c). */
-export const TILE_SETTINGS = 3;
 export const BRIGHT_MIN = 5, BRIGHT_STEP = 10;
 const BRIGHT_ARC_W = 14, BRIGHT_ARC_START = 135, BRIGHT_ARC_END = 45;
 export const BRIGHT_BTN_R = 28, BRIGHT_BTN_DX = 38, BRIGHT_BTN_CY = 140 + 28;
@@ -49,8 +67,10 @@ export function brightnessStep(v: number, dir: 1 | -1): number {
 export class DisplayRenderer {
   private scale = 0.3;
   private lastNav: NavMsg | null = null;
-  /** 0 = Nav, 1 = Trip, 2 = Status; fractional while swiping. */
+  /** TILE_NAV … TILE_SETTINGS; fractional while swiping. */
   tile = 0;
+  /** Media button under the finger, drawn in its pressed style (LV_STATE_PRESSED). */
+  mediaPressed: MediaCmd | null = null;
 
   // Street sets assembled from ROADS frames, like road_set_t in ui.c.
   private shown: { anchorId: number; roads: RoadPoint[][] } = { anchorId: 0, roads: [] };
@@ -102,9 +122,10 @@ export class DisplayRenderer {
       if (x <= -W || x >= W) continue;
       c.save();
       c.translate(x, 0);
-      if (t === 0) this.drawNav(st, nowMs);
-      else if (t === 1) this.drawTrip(st, deviceClockS, tzMin);
-      else if (t === 2) this.drawStatus(st);
+      if (t === TILE_NAV) this.drawNav(st, nowMs);
+      else if (t === TILE_MEDIA) this.drawMedia(st);
+      else if (t === TILE_TRIP) this.drawTrip(st, deviceClockS, tzMin);
+      else if (t === TILE_STATUS) this.drawStatus(st);
       else this.drawSettings(st);
       c.restore();
     }
@@ -409,6 +430,90 @@ export class DisplayRenderer {
     p.forEach(([x, y], i) => (i ? c.lineTo(ox + x, oy + y) : c.moveTo(ox + x, oy + y)));
     c.stroke();
     if (man === Maneuver.ROUNDABOUT && exit) this.text(String(exit), ox + 28, oy + 29, 20, C_ACCENT);
+  }
+
+  // ---------- Media tile ----------
+  /** The Media button whose circle contains (x, y) in device px, or null (the page has no tap-to-go-back). */
+  mediaHit(x: number, y: number): MediaCmd | null {
+    for (const b of MEDIA_BUTTONS) if (Math.hypot(x - b.cx, y - b.cy) <= b.d / 2) return b.cmd;
+    return null;
+  }
+
+  /** Port of build_media()/apply_media() in ui.c: volume ring, title, artist, five round buttons. */
+  private drawMedia(st: DeviceState) {
+    const c = this.ctx;
+    const m = st.media;
+    const active = m.state === MediaState.PLAYING || m.state === MediaState.PAUSED;
+    const vol = active && m.volumePct != null ? Math.min(100, m.volumePct) : 0;
+
+    // lv_arc, pad = inset: the stroke centre sits a further width/2 in. Rotation 270 = start at 12 o'clock.
+    const r = W / 2 - MEDIA_RING_INSET - MEDIA_RING_W / 2;
+    c.lineWidth = MEDIA_RING_W;
+    c.lineCap = 'round';
+    c.beginPath();
+    c.arc(CX, CX, r, 0, Math.PI * 2);
+    c.strokeStyle = C_PH_RING;
+    c.stroke();
+    if (vol > 0) {
+      c.beginPath();
+      c.arc(CX, CX, r, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * vol) / 100);
+      c.strokeStyle = C_ACCENT;
+      c.stroke();
+    }
+
+    this.text(this.ellipsize(active ? m.title : 'Nothing playing', 20, MEDIA_TITLE_W), CX, MEDIA_TITLE_Y + LINE_H_20 / 2, 20, C_TEXT);
+    if (active && m.artist) {
+      this.text(this.ellipsize(m.artist, 14, MEDIA_ARTIST_W), CX, MEDIA_ARTIST_Y + LINE_H_14 / 2, 14, C_DIM);
+    }
+
+    for (const b of MEDIA_BUTTONS) {
+      const pressed = this.mediaPressed === b.cmd;
+      c.beginPath();
+      c.arc(b.cx, b.cy, b.d / 2 - 1, 0, Math.PI * 2);
+      c.fillStyle = pressed ? MEDIA_PRESSED_BG : b.primary ? C_ACCENT : C_PANEL;
+      c.fill();
+      c.strokeStyle = pressed || b.primary ? C_ACCENT : C_PH_RING;
+      c.lineWidth = 2;
+      c.stroke();
+      this.mediaGlyph(b.cmd, b.cx, b.cy, b.primary ? '#000000' : C_TEXT, m.state === MediaState.PLAYING);
+    }
+  }
+
+  /** Stand-ins for LV_SYMBOL_PREV/PLAY/PAUSE/NEXT/MINUS/PLUS (the canvas has no FontAwesome glyphs). */
+  private mediaGlyph(cmd: MediaCmd, x: number, y: number, color: string, playing: boolean) {
+    const c = this.ctx;
+    c.fillStyle = color;
+    const tri = (tipX: number, baseX: number, h: number) => {
+      c.beginPath();
+      c.moveTo(tipX, y);
+      c.lineTo(baseX, y - h / 2);
+      c.lineTo(baseX, y + h / 2);
+      c.closePath();
+      c.fill();
+    };
+    switch (cmd) {
+      case MediaCmd.TOGGLE:
+        if (playing) {
+          c.fillRect(x - 9, y - 11, 6, 22);
+          c.fillRect(x + 3, y - 11, 6, 22);
+        } else tri(x + 11, x - 8, 24); // LV_SYMBOL_PLAY
+        break;
+      case MediaCmd.PREV:
+        c.fillRect(x - 8, y - 8, 3, 16);
+        tri(x - 5, x + 7, 16);
+        break;
+      case MediaCmd.NEXT:
+        c.fillRect(x + 5, y - 8, 3, 16);
+        tri(x + 5, x - 7, 16);
+        break;
+      case MediaCmd.VOL_DOWN:
+        c.fillRect(x - 8, y - 1.5, 16, 3);
+        break;
+      case MediaCmd.VOL_UP:
+        c.fillRect(x - 8, y - 1.5, 16, 3);
+        c.fillRect(x - 1.5, y - 8, 3, 16);
+        break;
+    }
   }
 
   // ---------- Trip / Status tiles ----------
