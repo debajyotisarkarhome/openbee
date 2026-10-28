@@ -30,12 +30,17 @@ private const val CMD_VOL_DOWN = 4
 
 class OpenbeeMediaModule : Module() {
   private val main = Handler(Looper.getMainLooper())
-  private var controller: MediaController? = null
+  // Written on the main thread, read by Functions on the JS thread.
+  @Volatile private var controller: MediaController? = null
   private var sessionsListenerRegistered = false
   private var volumeReceiverRegistered = false
 
+  // Application context, kept so stop() can still unregister after the React context is gone.
+  private var appCtx: Context? = null
   private val ctx: Context
-    get() = appContext.reactContext ?: throw IllegalStateException("No React context")
+    get() = appCtx
+      ?: (appContext.reactContext?.applicationContext ?: throw IllegalStateException("No React context"))
+        .also { appCtx = it }
   private val sessionManager: MediaSessionManager?
     get() = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
   private val audio: AudioManager
@@ -97,6 +102,7 @@ class OpenbeeMediaModule : Module() {
 
   private fun start() {
     main.post {
+      if (appCtx == null && appContext.reactContext == null) return@post
       if (!volumeReceiverRegistered) {
         val filter = IntentFilter(VOLUME_CHANGED_ACTION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -176,10 +182,11 @@ class OpenbeeMediaModule : Module() {
   }
 
   private fun runCommand(cmd: Int) {
+    val c = controller
     when (cmd) {
       CMD_TOGGLE -> toggle()
-      CMD_NEXT -> controller?.transportControls?.skipToNext()
-      CMD_PREV -> controller?.transportControls?.skipToPrevious()
+      CMD_NEXT -> c?.transportControls?.skipToNext()
+      CMD_PREV -> c?.transportControls?.skipToPrevious()
       CMD_VOL_UP -> audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
       CMD_VOL_DOWN -> audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
       else -> Unit

@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { requireNativeModule } from 'expo';
+import { requireOptionalNativeModule } from 'expo';
 
 export interface NativeMedia {
   /** 0 = no player, 1 = playing, 2 = paused */
@@ -11,11 +11,11 @@ export interface NativeMedia {
 
 const NONE: NativeMedia = { state: 0, title: '', artist: '', volumePct: null };
 
-// Android only; on iOS nothing native is loaded.
-const native = Platform.OS === 'android' ? requireNativeModule('OpenbeeMedia') : null;
+// Android only; on iOS nothing native is loaded. A dev build without the module degrades to NONE.
+const native = Platform.OS === 'android' ? requireOptionalNativeModule('OpenbeeMedia') : null;
 
 export function isSupported(): boolean {
-  return Platform.OS === 'android';
+  return native != null;
 }
 
 export function isPermissionGranted(): boolean {
