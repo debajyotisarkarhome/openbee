@@ -131,7 +131,7 @@ under congestion — stale NAV frames are dropped instead.
 
 ### The display screen is rendered three times
 
-`firmware/components/ui/ui.c` is the source of truth (LVGL tileview: Nav / Trip / Status, plus state
+`firmware/components/ui/ui.c` is the source of truth (LVGL tileview: Nav / Media / Status / Settings, plus state
 banner and notification overlay; all `ui_*` functions take the LVGL port lock internally so they're
 callable from any task). `app/sim/display.ts` is a hand-maintained canvas port — same coordinates,
 colors, auto-zoom, arrow geometry — and `app/src/ui/RoadShape.tsx` draws a simpler in-app version.

@@ -18,15 +18,15 @@ docs/       BLE protocol spec
 
 ## Display screens
 
-Swipe left and right to move between views. Tap the Trip or Status view to return to Nav.
+Swipe left and right to move between views. Tap the Status view to return to Nav.
 
 - **Nav:** shows the turn arrow and the distance to the turn. Below them is a heading-up map, about
   300 m deep. Your route is a blue line, the streets around it are grey, and a white dot marks where the
   turn happens. Medium and sharp bends get an orange or red badge with a chevron for their direction,
   and a chip warns of the next one, for example "SHARP LEFT 150 m". The bottom shows your speed, the
   speed limit and the street name.
-- **Trip:** clock, arrival time and distance left.
-- **Status:** device battery, phone battery and link state. **Long-press it to toggle demo mode**, which
+- **Status:** device battery, phone battery and link state, with the clock, arrival time and distance
+  left between them. **Long-press it to toggle demo mode**, which
   rides a built-in curvy road with side streets so you can check the screen without a phone.
 - **Overlays:** phone notifications, plus banners for Rerouting, GPS lost, Arrived and No phone.
 

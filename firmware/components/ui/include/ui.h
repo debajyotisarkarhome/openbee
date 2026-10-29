@@ -1,4 +1,4 @@
-// LVGL UI: swipeable Nav / Trip / Status views + state banner + notification overlay.
+// LVGL UI: swipeable Nav / Media / Status / Settings views + state banner + notification overlay.
 // All functions take the LVGL port lock internally; call them from any task.
 #pragma once
 

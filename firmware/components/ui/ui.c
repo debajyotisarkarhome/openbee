@@ -44,47 +44,66 @@
 #define C_PH_RING lv_color_hex(0x1C232B)
 enum { PH_UNSET = -1, PH_HIDDEN, PH_WAITING, PH_READY };
 
-// Status tile battery gauges
-#define BATT_ARC_W 10
-#define BATT_ARC_INSET 4 // from the glass edge, so the rounded caps aren't clipped by the bezel
-#define BATT_ARC_GAP 8   // degrees left open at top and bottom between the two halves
-#define BATT_DEV_Y 46    // device block (caption top) in the upper half, under the device arc
-#define BATT_PHONE_Y 128 // phone block in the lower half, above the phone arc
-#define BATT_DIVIDER_W 100
+#define ARC_INSET 4 // edge gauges sit this far in from the glass, so rounded caps aren't clipped by the bezel
+
+// Status tile (a watch face): battery chips on top, clock, then arrival | distance under icons.
+#define C_OFF lv_color_hex(0x3A4048) // greyed-out icon / value
+#define C_CHARGE lv_color_hex(0xFACC15)
+#define CHIP_Y 46     // chip row: icon + percentage (top edge)
+#define CHIP_DEV_X 50 // left edge of the device chip
+#define CHIP_PHONE_X 118
+#define CHIP_ICON 16
+#define CHIP_BAR_Y 68
+#define CHIP_BAR_W 48
+#define CHIP_BT_X 180 // link mark after the phone percentage
+#define DEMO_TAG_Y 24
+#define CLOCK_DY -6 // clock centre, relative to the screen centre
+#define TRIP_ICON_Y 148
+#define TRIP_ICON 18
+#define TRIP_VAL_Y 171 // top of the values under the icons
+#define TRIP_COL_DX 37 // column centres either side of the divider
+#define TRIP_DIV_Y 150
+#define TRIP_DIV_H 42
 #define BATT_LOW_PCT 15
 #define BATT_MID_PCT 35
 #define BATT_ANIM_MS 700
 #define BATT_CHARGING_MV 4250 // ≥ this means USB is feeding the charger (same rule as main.c)
 
 // Settings tile: brightness gauge around the edge (open at the bottom), −/+ buttons for gloved fingers.
-#define BRIGHT_ARC_W 14
+#define BRIGHT_ARC_W 4
 #define BRIGHT_ARC_START 135 // LVGL degrees: 0 = 3 o'clock, clockwise; 135 → 45 leaves the bottom quarter open
 #define BRIGHT_ARC_END 45
+#define BRIGHT_KNOB_PAD 5 // knob reaches this far past each side of the arc stroke (14 px disc)
 #define BRIGHT_STEP 10
-#define BRIGHT_BTN_D 56
-#define BRIGHT_BTN_DX 38
-#define BRIGHT_BTN_Y 140 // top edge of the buttons
+#define BRIGHT_SUN_Y 48
+#define BRIGHT_SUN 24
+#define BRIGHT_PILL_Y 150
 #define BRIGHT_KNOB_HIT_R 28 // touch radius around the knob centre (gloves); the rest of the page swipes
 
-// Media tile (240x240 px): volume ring + title/artist + five round buttons, all inside the ring.
-#define MEDIA_RING_INSET 6
-#define MEDIA_RING_W 6
+// −/+ pill with a level bar between the buttons (Media volume, brightness).
+#define PILL_X 52
+#define PILL_W 136
+#define PILL_H 40
+#define PILL_BAR_W 52
+#define PILL_BTN_EXT 6 // extra touch margin round each 40 px button, for gloves
+
+// Media tile (240x240 px): title/artist, prev / play / next discs, volume pill.
 #define MEDIA_TITLE_Y 44
 #define MEDIA_TITLE_W 130
 #define MEDIA_ARTIST_Y 68
 #define MEDIA_ARTIST_W 120
-#define MEDIA_ROW_Y 120 // centre of prev / play / next
-#define MEDIA_VOL_Y 190 // centre of vol - / vol +
+#define MEDIA_ROW_Y 122 // centre of prev / play / next
+#define MEDIA_PILL_Y 170
 
 static const uint32_t CURVE_COLORS[] = {0xC8CCD2, 0xFFD400, 0xFF8A00, 0xFF2D2D};
 static const char *CURVE_NAMES[] = {"", "GENTLE", "MEDIUM", "SHARP"};
 
 static struct {
     lv_obj_t *tv;
-    lv_obj_t *tile_nav, *tile_media, *tile_trip, *tile_status;
+    lv_obj_t *tile_nav, *tile_media, *tile_status;
 
     // Media
-    lv_obj_t *media_ring, *media_title, *media_artist, *media_play_lbl;
+    lv_obj_t *media_vol, *media_title, *media_artist, *media_play_lbl;
     ui_media_cb_t on_media_cmd;
 
     // Nav
@@ -104,17 +123,15 @@ static struct {
     lv_obj_t *ph, *ph_pulse, *ph_icon, *ph_title, *ph_sub, *ph_name;
     int ph_mode; // PH_*
 
-    // Trip
-    lv_obj_t *clock_lbl, *eta_lbl, *remain_lbl, *trip_speed_lbl;
-
     // Status
-    lv_obj_t *dev_batt_lbl, *phone_batt_lbl;
-    lv_obj_t *dev_arc, *phone_arc;         // semicircle gauges on the round edge: device left, phone right
-    lv_obj_t *dev_sub_lbl, *phone_sub_lbl; // voltage / charging under each percentage
+    lv_obj_t *dev_icon, *dev_charge, *dev_batt_lbl, *dev_bar;
+    lv_obj_t *phone_icon, *phone_batt_lbl, *phone_bar, *link_lbl, *demo_lbl;
+    lv_obj_t *clock_lbl;
+    lv_obj_t *eta_icon, *eta_lbl, *remain_icon, *remain_lbl, *remain_unit;
 
     // Settings
     lv_obj_t *tile_settings;
-    lv_obj_t *bright_arc, *bright_lbl;
+    lv_obj_t *bright_arc, *bright_lbl, *bright_bar;
     uint8_t brightness;
     ui_brightness_cb_t on_brightness;
 
@@ -692,57 +709,111 @@ static void build_nav(lv_obj_t *t)
     build_placeholder(t); // last, so it covers everything above
 }
 
-static void build_trip(lv_obj_t *t)
+// ---------- status tile ----------
+
+enum { ICON_DEVICE, ICON_PHONE, ICON_FLAG, ICON_ROUTE, ICON_SUN };
+
+/** Point on the cubic Bézier a→d at t. */
+static float bez(float a, float b, float c, float d, float t)
 {
-    style_tile(t);
-    lv_obj_add_event_cb(t, back_to_nav, LV_EVENT_CLICKED, NULL);
-    s.clock_lbl = label(t, &lv_font_montserrat_40, C_TEXT);
-    lv_obj_align(s.clock_lbl, LV_ALIGN_TOP_MID, 0, 40);
-    lv_label_set_text(s.clock_lbl, "--:--");
-    lv_obj_t *eta_cap = label(t, &lv_font_montserrat_14, C_DIM);
-    lv_label_set_text(eta_cap, "ARRIVAL");
-    lv_obj_align(eta_cap, LV_ALIGN_CENTER, 0, -18);
-    s.eta_lbl = label(t, &lv_font_montserrat_28, C_ACCENT);
-    lv_obj_align(s.eta_lbl, LV_ALIGN_CENTER, 0, 8);
-    lv_label_set_text(s.eta_lbl, "--:--");
-    s.remain_lbl = label(t, &lv_font_montserrat_20, C_TEXT);
-    lv_obj_align(s.remain_lbl, LV_ALIGN_CENTER, 0, 44);
-    s.trip_speed_lbl = label(t, &lv_font_montserrat_14, C_DIM);
-    lv_obj_align(s.trip_speed_lbl, LV_ALIGN_BOTTOM_MID, 0, -34);
+    float u = 1 - t;
+    return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
 }
 
-static lv_obj_t *batt_arc(lv_obj_t *t, int32_t start, int32_t end, lv_arc_mode_t mode)
+/** Line-art icons on a 24-unit grid, scaled to the object and drawn in its text colour (recolour = style change). */
+static void icon_draw_cb(lv_event_t *e)
 {
-    // LVGL arc angles: 0° = 3 o'clock, increasing clockwise on screen.
-    lv_obj_t *a = lv_arc_create(t);
-    lv_obj_set_size(a, W, H);
-    lv_obj_center(a);
-    lv_arc_set_bg_angles(a, start, end);
-    lv_arc_set_mode(a, mode);
-    lv_arc_set_range(a, 0, 100);
-    lv_arc_set_value(a, 0);
-    lv_obj_remove_style(a, NULL, LV_PART_KNOB);
-    lv_obj_set_clickable(a, false); // taps/long-press belong to the tile
-    lv_obj_set_style_pad_all(a, BATT_ARC_INSET, 0);
-    lv_obj_set_style_arc_width(a, BATT_ARC_W, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(a, C_PH_RING, LV_PART_MAIN);
-    lv_obj_set_style_arc_rounded(a, true, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(a, BATT_ARC_W, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(a, true, LV_PART_INDICATOR);
-    return a;
+    lv_obj_t *o = lv_event_get_target_obj(e);
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    s_layer = lv_event_get_layer(e);
+    s_ox = a.x1;
+    s_oy = a.y1;
+    s_cx1 = s_cy1 = -1000; // nothing worth culling at this size
+    s_cx2 = s_cy2 = 1000;
+    float k = lv_area_get_width(&a) / 24.0f;
+    int32_t w = (int32_t)(2.2f * k + 0.5f);
+    lv_color_t c = lv_obj_get_style_text_color(o, LV_PART_MAIN);
+    lv_draw_rect_dsc_t r;
+    lv_draw_rect_dsc_init(&r);
+    r.bg_opa = LV_OPA_TRANSP;
+    r.border_color = c;
+    r.border_width = w;
+    lv_area_t box;
+
+    switch ((int)(intptr_t)lv_event_get_user_data(e)) {
+    case ICON_DEVICE: // the round unit itself, with a nav arrow
+        r.radius = LV_RADIUS_CIRCLE;
+        box = (lv_area_t){s_ox + (int32_t)(3 * k), s_oy + (int32_t)(3 * k), s_ox + (int32_t)(21 * k),
+                          s_oy + (int32_t)(21 * k)};
+        lv_draw_rect(s_layer, &r, &box);
+        triangle(12 * k, 7 * k, 16 * k, 15 * k, 12 * k, 12.8f * k, c);
+        triangle(12 * k, 7 * k, 12 * k, 12.8f * k, 8 * k, 15 * k, c);
+        break;
+    case ICON_PHONE:
+        r.radius = (int32_t)(2.5f * k);
+        box = (lv_area_t){s_ox + (int32_t)(6.5f * k), s_oy + (int32_t)(2.5f * k), s_ox + (int32_t)(17.5f * k),
+                          s_oy + (int32_t)(21.5f * k)};
+        lv_draw_rect(s_layer, &r, &box);
+        line(10 * k, 18.5f * k, 14 * k, 18.5f * k, w, c);
+        break;
+    case ICON_FLAG: // pole + swallowtail pennant
+        line(5 * k, 3 * k, 5 * k, 22 * k, w, c);
+        triangle(5 * k, 4 * k, 18 * k, 4 * k, 15 * k, 8.5f * k, c);
+        triangle(5 * k, 4 * k, 15 * k, 8.5f * k, 5 * k, 13 * k, c);
+        triangle(5 * k, 13 * k, 15 * k, 8.5f * k, 18 * k, 13 * k, c);
+        break;
+    case ICON_ROUTE: // two stops joined by a dashed bend
+        disc(6 * k, 19 * k, (int32_t)(2.4f * k + 0.5f), c);
+        disc(18 * k, 5 * k, (int32_t)(2.4f * k + 0.5f), c);
+        for (int i = 0; i < 5; i += 2) { // dashes on alternate sixths of the curve
+            float t0 = i / 6.0f, t1 = (i + 1) / 6.0f;
+            line(bez(6, 6, 18, 18, t0) * k, bez(16.5f, 11.5f, 12.5f, 7.5f, t0) * k, bez(6, 6, 18, 18, t1) * k,
+                 bez(16.5f, 11.5f, 12.5f, 7.5f, t1) * k, w, c);
+        }
+        break;
+    case ICON_SUN: // disc + eight rays
+        disc(12 * k, 12 * k, (int32_t)(4.5f * k + 0.5f), c);
+        for (int i = 0; i < 8; i++) {
+            float ux = cosf(i * (float)M_PI / 4), uy = sinf(i * (float)M_PI / 4);
+            line((12 + 7.5f * ux) * k, (12 + 7.5f * uy) * k, (12 + 10 * ux) * k, (12 + 10 * uy) * k, w, c);
+        }
+        break;
+    }
 }
 
-/** Caption, big percentage and a small sub-line, stacked from y (top edge of the caption). */
-static void batt_block(lv_obj_t *t, int32_t y, const char *caption, lv_obj_t **pct, lv_obj_t **sub)
+static lv_obj_t *icon(lv_obj_t *parent, int kind, int32_t size, lv_color_t color)
 {
-    lv_obj_t *cap = label(t, &lv_font_montserrat_14, C_DIM);
-    lv_label_set_text(cap, caption);
-    lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, y);
-    *pct = label(t, &lv_font_montserrat_28, C_TEXT);
-    lv_label_set_text(*pct, "--");
-    lv_obj_align(*pct, LV_ALIGN_TOP_MID, 0, y + 16);
-    *sub = label(t, &lv_font_montserrat_14, C_DIM);
-    lv_obj_align(*sub, LV_ALIGN_TOP_MID, 0, y + 48);
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, size, size);
+    lv_obj_set_style_text_color(o, color, 0);
+    lv_obj_set_clickable(o, false);
+    lv_obj_add_event_cb(o, icon_draw_cb, LV_EVENT_DRAW_MAIN, (void *)(intptr_t)kind);
+    return o;
+}
+
+/** Thin 4 px level bar: dark track, coloured fill (battery chips, the −/+ pills). */
+static lv_obj_t *level_bar(lv_obj_t *t, int32_t w, int32_t min, lv_color_t fill)
+{
+    lv_obj_t *b = lv_bar_create(t);
+    lv_obj_set_size(b, w, 4);
+    lv_bar_set_range(b, min, 100);
+    lv_obj_set_style_bg_color(b, C_PH_RING, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(b, fill, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(b, 2, LV_PART_MAIN);
+    lv_obj_set_style_radius(b, 2, LV_PART_INDICATOR);
+    lv_obj_set_clickable(b, false);
+    return b;
+}
+
+static lv_obj_t *batt_bar(lv_obj_t *t, int32_t x)
+{
+    lv_obj_t *b = level_bar(t, CHIP_BAR_W, 0, C_PH_RING);
+    lv_obj_set_pos(b, x, CHIP_BAR_Y);
+    lv_obj_set_style_anim_duration(b, BATT_ANIM_MS, LV_PART_MAIN);
+    return b;
 }
 
 static lv_color_t batt_color(uint8_t pct)
@@ -750,35 +821,19 @@ static lv_color_t batt_color(uint8_t pct)
     return lv_color_hex(pct <= BATT_LOW_PCT ? 0xFF2D2D : pct <= BATT_MID_PCT ? 0xFF8A00 : 0x22C55E);
 }
 
-static void batt_arc_anim_cb(void *arc, int32_t v)
+/** Show pct on a chip (the bar animates), or "--" and an empty bar when unknown (pct > 100). */
+static void batt_set(lv_obj_t *bar, lv_obj_t *pct_lbl, uint8_t pct)
 {
-    lv_arc_set_value(arc, v);
-}
-
-/** Show pct on a gauge (animated), or an empty track when unknown (pct > 100). */
-static void batt_set(lv_obj_t *arc, lv_obj_t *pct_lbl, uint8_t pct)
-{
-    bool known = pct <= 100;
-    int32_t to = known ? pct : 0;
-    if (known) {
+    if (pct <= 100) {
         lv_label_set_text_fmt(pct_lbl, "%u%%", pct);
-        lv_obj_set_style_arc_color(arc, batt_color(pct), LV_PART_INDICATOR);
+        lv_obj_set_style_text_color(pct_lbl, pct <= BATT_MID_PCT ? batt_color(pct) : C_TEXT, 0);
+        lv_obj_set_style_bg_color(bar, batt_color(pct), LV_PART_INDICATOR);
+        lv_bar_set_value(bar, pct, LV_ANIM_ON);
     } else {
         lv_label_set_text(pct_lbl, "--");
+        lv_obj_set_style_text_color(pct_lbl, C_DIM, 0);
+        lv_bar_set_value(bar, 0, LV_ANIM_ON);
     }
-    int32_t from = lv_arc_get_value(arc);
-    if (from == to) {
-        return;
-    }
-    lv_anim_delete(arc, batt_arc_anim_cb);
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, arc);
-    lv_anim_set_exec_cb(&a, batt_arc_anim_cb);
-    lv_anim_set_values(&a, from, to);
-    lv_anim_set_duration(&a, BATT_ANIM_MS);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_start(&a);
 }
 
 static void build_status(lv_obj_t *t)
@@ -786,21 +841,66 @@ static void build_status(lv_obj_t *t)
     style_tile(t);
     lv_obj_add_event_cb(t, back_to_nav, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(t, demo_long_press, LV_EVENT_LONG_PRESSED, NULL);
-    // Top half of the edge: device (left → right over the top, clockwise); bottom half: phone (left → right
-    // under the bottom: the arc runs right → left clockwise, so it fills reversed).
-    s.dev_arc = batt_arc(t, 180 + BATT_ARC_GAP, 360 - BATT_ARC_GAP, LV_ARC_MODE_NORMAL);
-    s.phone_arc = batt_arc(t, BATT_ARC_GAP, 180 - BATT_ARC_GAP, LV_ARC_MODE_REVERSE);
 
-    lv_obj_t *divider = lv_obj_create(t);
-    lv_obj_remove_style_all(divider);
-    lv_obj_set_size(divider, BATT_DIVIDER_W, 2);
-    lv_obj_align(divider, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(divider, C_PH_RING, 0);
-    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
-    lv_obj_set_clickable(divider, false);
+    // Battery chips: icon + percentage over a thin level bar. A bolt stands in for the device icon while charging.
+    s.dev_icon = icon(t, ICON_DEVICE, CHIP_ICON, C_DIM);
+    lv_obj_set_pos(s.dev_icon, CHIP_DEV_X, CHIP_Y);
+    s.dev_charge = label(t, &lv_font_montserrat_14, C_CHARGE);
+    lv_label_set_text(s.dev_charge, LV_SYMBOL_CHARGE);
+    lv_obj_set_pos(s.dev_charge, CHIP_DEV_X + 2, CHIP_Y);
+    lv_obj_set_hidden(s.dev_charge, true);
+    s.dev_batt_lbl = label(t, &lv_font_montserrat_14, C_DIM);
+    lv_obj_set_pos(s.dev_batt_lbl, CHIP_DEV_X + 20, CHIP_Y + 1);
+    lv_label_set_text(s.dev_batt_lbl, "--");
+    s.dev_bar = batt_bar(t, CHIP_DEV_X);
 
-    batt_block(t, BATT_DEV_Y, "DEVICE", &s.dev_batt_lbl, &s.dev_sub_lbl);
-    batt_block(t, BATT_PHONE_Y, "PHONE", &s.phone_batt_lbl, &s.phone_sub_lbl);
+    s.phone_icon = icon(t, ICON_PHONE, CHIP_ICON, C_DIM);
+    lv_obj_set_pos(s.phone_icon, CHIP_PHONE_X, CHIP_Y);
+    s.phone_batt_lbl = label(t, &lv_font_montserrat_14, C_DIM);
+    lv_obj_set_pos(s.phone_batt_lbl, CHIP_PHONE_X + 20, CHIP_Y + 1);
+    s.phone_bar = batt_bar(t, CHIP_PHONE_X);
+    s.link_lbl = label(t, &lv_font_montserrat_14, C_OFF);
+    lv_label_set_text(s.link_lbl, LV_SYMBOL_BLUETOOTH);
+    lv_obj_set_pos(s.link_lbl, CHIP_BT_X, CHIP_Y + 1);
+    s.demo_lbl = label(t, &lv_font_montserrat_14, C_ACCENT);
+    lv_label_set_text(s.demo_lbl, "DEMO");
+    lv_obj_align(s.demo_lbl, LV_ALIGN_TOP_MID, 0, DEMO_TAG_Y);
+    lv_obj_set_hidden(s.demo_lbl, true);
+
+    s.clock_lbl = label(t, &lv_font_montserrat_40, C_TEXT);
+    lv_obj_align(s.clock_lbl, LV_ALIGN_CENTER, 0, CLOCK_DY);
+    lv_label_set_text(s.clock_lbl, "--:--");
+
+    // Arrival | distance left, each under its icon.
+    lv_obj_t *div = lv_obj_create(t);
+    lv_obj_remove_style_all(div);
+    lv_obj_set_size(div, 2, TRIP_DIV_H);
+    lv_obj_align(div, LV_ALIGN_TOP_MID, 0, TRIP_DIV_Y);
+    lv_obj_set_style_bg_color(div, C_PH_RING, 0);
+    lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
+    lv_obj_set_clickable(div, false);
+
+    s.eta_icon = icon(t, ICON_FLAG, TRIP_ICON, C_OFF);
+    lv_obj_align(s.eta_icon, LV_ALIGN_TOP_MID, -TRIP_COL_DX, TRIP_ICON_Y);
+    s.eta_lbl = label(t, &lv_font_montserrat_20, C_OFF);
+    lv_obj_align(s.eta_lbl, LV_ALIGN_TOP_MID, -TRIP_COL_DX, TRIP_VAL_Y);
+    lv_label_set_text(s.eta_lbl, "--:--");
+
+    s.remain_icon = icon(t, ICON_ROUTE, TRIP_ICON, C_OFF);
+    lv_obj_align(s.remain_icon, LV_ALIGN_TOP_MID, TRIP_COL_DX, TRIP_ICON_Y);
+    // Number at 20 px and unit at 14 px, centred together as one row.
+    lv_obj_t *row = lv_obj_create(t);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(row, 4, 0);
+    lv_obj_align(row, LV_ALIGN_TOP_MID, TRIP_COL_DX, TRIP_VAL_Y);
+    lv_obj_set_clickable(row, false);
+    s.remain_lbl = label(row, &lv_font_montserrat_20, C_OFF);
+    lv_label_set_text(s.remain_lbl, "--");
+    s.remain_unit = label(row, &lv_font_montserrat_14, C_DIM);
+    lv_obj_set_style_pad_bottom(s.remain_unit, 2, 0); // sit on the 20 px number's baseline
 }
 
 /** Show and apply a brightness; from_arc skips writing the arc back while the rider is dragging it. */
@@ -811,6 +911,7 @@ static void bright_set(int32_t v, bool from_arc)
         lv_arc_set_value(s.bright_arc, v);
     }
     lv_label_set_text_fmt(s.bright_lbl, "%d%%", (int)v);
+    lv_bar_set_value(s.bright_bar, v, LV_ANIM_OFF);
     if (v != s.brightness) {
         s.brightness = (uint8_t)v;
         if (s.on_brightness) {
@@ -837,7 +938,7 @@ static void bright_arc_hit_test(lv_event_t *e)
     float span = 360 - BRIGHT_ARC_START + BRIGHT_ARC_END;
     float k = (float)(lv_arc_get_value(s.bright_arc) - UI_BRIGHTNESS_MIN) / (100 - UI_BRIGHTNESS_MIN);
     float ang = (BRIGHT_ARC_START + span * k) * (float)M_PI / 180.0f;
-    float r = lv_area_get_width(&a) / 2.0f - (BATT_ARC_INSET + BRIGHT_ARC_W / 2) - BRIGHT_ARC_W / 2.0f; // stroke centre
+    float r = lv_area_get_width(&a) / 2.0f - (ARC_INSET + BRIGHT_KNOB_PAD) - BRIGHT_ARC_W / 2.0f; // stroke centre
     float kx = (a.x1 + a.x2) / 2.0f + cosf(ang) * r, ky = (a.y1 + a.y2) / 2.0f + sinf(ang) * r;
     info->res = hypotf(info->point->x - kx, info->point->y - ky) <= BRIGHT_KNOB_HIT_R;
 }
@@ -851,38 +952,60 @@ static void bright_step(lv_event_t *e)
     bright_set(v, false);
 }
 
-static void bright_button(lv_obj_t *t, int32_t dx, const char *symbol, int dir)
+typedef struct {
+    lv_obj_t *bg, *bar, *lbl[2]; // lbl: the − and + glyphs (their parents are the buttons)
+} pill_t;
+
+/**
+ * Dark rounded pill: − button, level bar, + button. Buttons are invisible until pressed. A tap sends cb with
+ * minus_ud / plus_ud, holding repeats it; SHORT_CLICKED (not CLICKED, which also fires after a long press) so a
+ * hold isn't N+1 steps.
+ */
+static pill_t pill(lv_obj_t *t, int32_t y, int32_t bar_min, lv_event_cb_t cb, intptr_t minus_ud, intptr_t plus_ud)
 {
-    lv_obj_t *b = lv_button_create(t);
-    lv_obj_remove_style_all(b);
-    lv_obj_set_size(b, BRIGHT_BTN_D, BRIGHT_BTN_D);
-    lv_obj_align(b, LV_ALIGN_TOP_MID, dx, BRIGHT_BTN_Y);
-    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(b, C_PANEL, 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(b, C_PH_RING, 0);
-    lv_obj_set_style_border_width(b, 2, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x0E2A36), LV_STATE_PRESSED);
-    lv_obj_set_style_border_color(b, C_ACCENT, LV_STATE_PRESSED);
-    // Clicked for a tap, repeat while held to sweep the range.
-    lv_obj_add_event_cb(b, bright_step, LV_EVENT_CLICKED, (void *)(intptr_t)dir);
-    lv_obj_add_event_cb(b, bright_step, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)dir);
-    lv_obj_t *l = label(b, &lv_font_montserrat_28, C_TEXT);
-    lv_label_set_text(l, symbol);
-    lv_obj_center(l);
+    pill_t p;
+    p.bg = lv_obj_create(t);
+    lv_obj_remove_style_all(p.bg);
+    lv_obj_set_size(p.bg, PILL_W, PILL_H);
+    lv_obj_set_pos(p.bg, PILL_X, y);
+    lv_obj_set_style_radius(p.bg, PILL_H / 2, 0);
+    lv_obj_set_style_bg_color(p.bg, C_PANEL, 0);
+    lv_obj_set_style_bg_opa(p.bg, LV_OPA_COVER, 0);
+    lv_obj_set_clickable(p.bg, false);
+
+    p.bar = level_bar(t, PILL_BAR_W, bar_min, C_ACCENT);
+    lv_obj_set_pos(p.bar, CX - PILL_BAR_W / 2, y + PILL_H / 2 - 2);
+
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *b = lv_button_create(t);
+        lv_obj_remove_style_all(b);
+        lv_obj_set_size(b, PILL_H, PILL_H);
+        lv_obj_set_pos(b, i ? PILL_X + PILL_W - PILL_H : PILL_X, y);
+        lv_obj_set_ext_click_area(b, PILL_BTN_EXT);
+        lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x0E2A36), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+        void *ud = (void *)(i ? plus_ud : minus_ud);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_SHORT_CLICKED, ud);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_LONG_PRESSED_REPEAT, ud);
+        p.lbl[i] = label(b, &lv_font_montserrat_20, C_TEXT);
+        lv_label_set_text(p.lbl[i], i ? LV_SYMBOL_PLUS : LV_SYMBOL_MINUS);
+        lv_obj_center(p.lbl[i]);
+    }
+    return p;
 }
 
 static void build_settings(lv_obj_t *t)
 {
     style_tile(t);
-    // No tap-to-go-back here, unlike Trip/Status: a near miss on a button would throw the rider off the screen.
+    // No tap-to-go-back here, unlike Status: a near miss on a button would throw the rider off the screen.
 
     s.bright_arc = lv_arc_create(t);
     lv_obj_set_size(s.bright_arc, W, H);
     lv_obj_center(s.bright_arc);
     lv_arc_set_bg_angles(s.bright_arc, BRIGHT_ARC_START, BRIGHT_ARC_END);
     lv_arc_set_range(s.bright_arc, UI_BRIGHTNESS_MIN, 100);
-    lv_obj_set_style_pad_all(s.bright_arc, BATT_ARC_INSET + BRIGHT_ARC_W / 2, 0); // room for the knob
+    lv_obj_set_style_pad_all(s.bright_arc, ARC_INSET + BRIGHT_KNOB_PAD, 0); // room for the knob
     lv_obj_set_style_arc_width(s.bright_arc, BRIGHT_ARC_W, LV_PART_MAIN);
     lv_obj_set_style_arc_color(s.bright_arc, C_PH_RING, LV_PART_MAIN);
     lv_obj_set_style_arc_rounded(s.bright_arc, true, LV_PART_MAIN);
@@ -891,20 +1014,18 @@ static void build_settings(lv_obj_t *t)
     lv_obj_set_style_arc_rounded(s.bright_arc, true, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(s.bright_arc, C_TEXT, LV_PART_KNOB);
     lv_obj_set_style_bg_opa(s.bright_arc, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(s.bright_arc, 3, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s.bright_arc, BRIGHT_KNOB_PAD, LV_PART_KNOB);
     lv_obj_set_style_shadow_width(s.bright_arc, 0, LV_PART_KNOB);
     lv_obj_add_event_cb(s.bright_arc, bright_arc_changed, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_flag(s.bright_arc, LV_OBJ_FLAG_ADV_HITTEST);
     lv_obj_add_event_cb(s.bright_arc, bright_arc_hit_test, LV_EVENT_HIT_TEST, NULL);
 
-    lv_obj_t *cap = label(t, &lv_font_montserrat_14, C_DIM);
-    lv_label_set_text(cap, "BRIGHTNESS");
-    lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 58);
+    lv_obj_t *sun = icon(t, ICON_SUN, BRIGHT_SUN, C_DIM);
+    lv_obj_align(sun, LV_ALIGN_TOP_MID, 0, BRIGHT_SUN_Y);
     s.bright_lbl = label(t, &lv_font_montserrat_40, C_TEXT);
     lv_obj_align(s.bright_lbl, LV_ALIGN_TOP_MID, 0, 80);
 
-    bright_button(t, -BRIGHT_BTN_DX, LV_SYMBOL_MINUS, -1);
-    bright_button(t, BRIGHT_BTN_DX, LV_SYMBOL_PLUS, 1);
+    s.bright_bar = pill(t, BRIGHT_PILL_Y, UI_BRIGHTNESS_MIN, bright_step, -1, 1).bar;
 }
 
 // ---------- media ----------
@@ -916,9 +1037,9 @@ static void media_button_cb(lv_event_t *e)
     }
 }
 
-/** Round button centred at (cx, cy). Play is the filled accent one with a black symbol; vol buttons also repeat. */
+/** Round button centred at (cx, cy): a soft dark disc, or (play) the filled accent one with a black symbol. */
 static lv_obj_t *media_button(lv_obj_t *t, int32_t cx, int32_t cy, int32_t d, const lv_font_t *font, const char *symbol,
-                              media_cmd_t cmd, bool primary, bool repeat)
+                              media_cmd_t cmd, bool primary)
 {
     lv_obj_t *b = lv_button_create(t);
     lv_obj_remove_style_all(b);
@@ -927,15 +1048,11 @@ static lv_obj_t *media_button(lv_obj_t *t, int32_t cx, int32_t cy, int32_t d, co
     lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(b, primary ? C_ACCENT : C_PANEL, 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(b, primary ? C_ACCENT : C_PH_RING, 0);
+    lv_obj_set_style_border_color(b, primary ? C_ACCENT : C_PANEL, 0);
     lv_obj_set_style_border_width(b, 2, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(0x0E2A36), LV_STATE_PRESSED);
     lv_obj_set_style_border_color(b, C_ACCENT, LV_STATE_PRESSED);
-    // CLICKED also fires on release after a long press; repeating buttons use SHORT_CLICKED so a hold isn't N+1 steps.
-    lv_obj_add_event_cb(b, media_button_cb, repeat ? LV_EVENT_SHORT_CLICKED : LV_EVENT_CLICKED, (void *)(intptr_t)cmd);
-    if (repeat) {
-        lv_obj_add_event_cb(b, media_button_cb, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)cmd);
-    }
+    lv_obj_add_event_cb(b, media_button_cb, LV_EVENT_CLICKED, (void *)(intptr_t)cmd);
     lv_obj_t *l = label(b, font, primary ? C_BG : C_TEXT);
     lv_label_set_text(l, symbol);
     lv_obj_center(l);
@@ -943,22 +1060,24 @@ static lv_obj_t *media_button(lv_obj_t *t, int32_t cx, int32_t cy, int32_t d, co
 }
 
 /**
- * Bake the Media page's static artwork (ring track, button discs and the four fixed icons) into one PSRAM image.
+ * Bake the Media page's static artwork (button discs, volume pill and the five fixed icons) into one PSRAM image.
  * LVGL's software renderer is slow at circles and icon glyphs and redraws every object once per draw strip, so
  * drawing them live cost ~30 ms a frame and made swipes next to Nav stutter. The real objects stay on top for
- * touch, the pressed look, the play/pause icon and the volume fill. If PSRAM or the snapshot fails, the page
+ * touch, the pressed look, the play/pause icon and the volume bar. If PSRAM or the snapshot fails, the page
  * just keeps drawing everything live.
  */
-static void bake_media_art(lv_obj_t *t, lv_obj_t *const *btn_lbls, size_t n)
+static void bake_media_art(lv_obj_t *t, lv_obj_t *const *btn_lbls, size_t n, lv_obj_t *pill_bg)
 {
     static lv_draw_buf_t art;
     uint32_t size = LV_DRAW_BUF_SIZE(W, H, LV_COLOR_FORMAT_RGB565);
     void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
-    lv_obj_set_hidden(s.media_play_lbl, true); // play/pause changes, so it stays live
+    lv_obj_set_hidden(s.media_play_lbl, true); // play/pause and the volume change, so they stay live
+    lv_obj_set_hidden(s.media_vol, true);
     lv_obj_update_layout(t);
     bool ok = data && lv_draw_buf_init(&art, W, H, LV_COLOR_FORMAT_RGB565, 0, data, size) == LV_RESULT_OK &&
               lv_snapshot_take_to_draw_buf(t, LV_COLOR_FORMAT_RGB565, &art) == LV_RESULT_OK;
     lv_obj_set_hidden(s.media_play_lbl, false);
+    lv_obj_set_hidden(s.media_vol, false);
     if (!ok) {
         heap_caps_free(data);
         return;
@@ -969,7 +1088,7 @@ static void bake_media_art(lv_obj_t *t, lv_obj_t *const *btn_lbls, size_t n)
     lv_obj_set_pos(img, 0, 0);
     lv_obj_move_to_index(img, 0);
     lv_obj_set_style_bg_opa(t, LV_OPA_TRANSP, 0); // the image covers the tile
-    lv_obj_set_style_arc_opa(s.media_ring, LV_OPA_TRANSP, LV_PART_MAIN); // track is in the image; fill stays live
+    lv_obj_set_style_bg_opa(pill_bg, LV_OPA_TRANSP, 0); // in the image
     for (size_t i = 0; i < n; i++) {
         // Idle buttons draw nothing; pressed ones draw their disc, border and (inherited text_opa) icon as before.
         lv_obj_t *b = lv_obj_get_parent(btn_lbls[i]);
@@ -988,22 +1107,6 @@ static void build_media(lv_obj_t *t)
     style_tile(t);
     // No tap-to-go-back, like Settings: a near miss on a button must not throw the rider off the page.
 
-    // Volume ring: display only, full circle starting at 12 o'clock.
-    s.media_ring = lv_arc_create(t);
-    lv_obj_set_size(s.media_ring, W, H);
-    lv_obj_center(s.media_ring);
-    lv_obj_set_clickable(s.media_ring, false);
-    lv_arc_set_rotation(s.media_ring, 270);
-    lv_arc_set_bg_angles(s.media_ring, 0, 360);
-    lv_arc_set_range(s.media_ring, 0, 100);
-    lv_obj_set_style_pad_all(s.media_ring, MEDIA_RING_INSET, 0);
-    lv_obj_set_style_arc_width(s.media_ring, MEDIA_RING_W, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s.media_ring, C_PH_RING, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s.media_ring, MEDIA_RING_W, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(s.media_ring, C_ACCENT, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(s.media_ring, LV_OPA_TRANSP, LV_PART_KNOB); // no knob
-    lv_obj_set_style_pad_all(s.media_ring, 0, LV_PART_KNOB);
-
     s.media_title = label(t, &lv_font_montserrat_20, C_TEXT);
     // Fixed one-line height, else LONG_DOT wraps (content-sized height) instead of ellipsizing.
     lv_obj_set_size(s.media_title, MEDIA_TITLE_W, lv_font_get_line_height(&lv_font_montserrat_20));
@@ -1016,15 +1119,17 @@ static void build_media(lv_obj_t *t)
     lv_obj_set_style_text_align(s.media_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s.media_artist, LV_ALIGN_TOP_MID, 0, MEDIA_ARTIST_Y);
 
+    pill_t vol = pill(t, MEDIA_PILL_Y, 0, media_button_cb, MEDIA_CMD_VOL_DOWN, MEDIA_CMD_VOL_UP);
+    s.media_vol = vol.bar;
     lv_obj_t *btns[] = {
-        media_button(t, 54, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_PREV, MEDIA_CMD_PREV, false, false),
+        media_button(t, 56, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_PREV, MEDIA_CMD_PREV, false),
         s.media_play_lbl =
-            media_button(t, 120, MEDIA_ROW_Y, 70, &lv_font_montserrat_28, LV_SYMBOL_PLAY, MEDIA_CMD_TOGGLE, true, false),
-        media_button(t, 186, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_NEXT, MEDIA_CMD_NEXT, false, false),
-        media_button(t, 92, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_MINUS, MEDIA_CMD_VOL_DOWN, false, true),
-        media_button(t, 148, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_PLUS, MEDIA_CMD_VOL_UP, false, true),
+            media_button(t, 120, MEDIA_ROW_Y, 68, &lv_font_montserrat_28, LV_SYMBOL_PLAY, MEDIA_CMD_TOGGLE, true),
+        media_button(t, 184, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_NEXT, MEDIA_CMD_NEXT, false),
+        vol.lbl[0],
+        vol.lbl[1],
     };
-    bake_media_art(t, btns, sizeof btns / sizeof btns[0]);
+    bake_media_art(t, btns, sizeof btns / sizeof btns[0], vol.bg);
 }
 
 static void apply_media(const media_msg_t *m)
@@ -1033,7 +1138,8 @@ static void apply_media(const media_msg_t *m)
     bool titled = active && m->title[0]; // a session with no metadata yet reads as nothing playing
     lv_label_set_text(s.media_title, titled ? m->title : "Nothing playing");
     lv_label_set_text(s.media_artist, titled ? m->artist : "");
-    lv_arc_set_value(s.media_ring, active && m->volume_pct != PROTO_UNKNOWN_VOLUME ? (m->volume_pct > 100 ? 100 : m->volume_pct) : 0);
+    lv_bar_set_value(s.media_vol, active && m->volume_pct != PROTO_UNKNOWN_VOLUME ? (m->volume_pct > 100 ? 100 : m->volume_pct) : 0,
+                     LV_ANIM_OFF);
     lv_label_set_text(s.media_play_lbl, m->state == MEDIA_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 }
 
@@ -1124,7 +1230,7 @@ static void refresh_banner(void)
 // those; the live widgets are skipped (opa 0) until it settles. Costs one ~40 ms frame at the start, and the
 // map stands still for the swipe. Without PSRAM it just stays live.
 
-#define TILE_COUNT 5
+#define TILE_COUNT 4
 #define SNAP_BUFS 3 // the active tile and both neighbours
 static lv_obj_t *s_tiles[TILE_COUNT];
 static lv_obj_t *s_snap_img[TILE_COUNT]; // per tile, hidden unless a swipe is showing it
@@ -1204,7 +1310,7 @@ static void tv_scroll_begin(lv_event_t *e)
 
 static void init_swipe_snapshots(void)
 {
-    lv_obj_t *tiles[TILE_COUNT] = {s.tile_nav, s.tile_media, s.tile_trip, s.tile_status, s.tile_settings};
+    lv_obj_t *tiles[TILE_COUNT] = {s.tile_nav, s.tile_media, s.tile_status, s.tile_settings};
     uint32_t size = LV_DRAW_BUF_SIZE(W, H, LV_COLOR_FORMAT_RGB565);
     for (int b = 0; b < SNAP_BUFS; b++) {
         void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
@@ -1236,12 +1342,36 @@ static void tile_changed(lv_event_t *e)
 static void refresh_status(void)
 {
     bool phone_known = s.have_trip && s.trip.phone_batt != PROTO_UNKNOWN_BATT;
-    batt_set(s.phone_arc, s.phone_batt_lbl, phone_known ? s.trip.phone_batt : 0xFF);
-    // The link status lives here now (the nav placeholder shows the device name while waiting).
-    lv_label_set_text(s.phone_sub_lbl, s.demo         ? "demo mode"
-                                       : !s.connected ? "offline"
-                                       : phone_known  ? "connected"
-                                                      : "no data");
+    batt_set(s.phone_bar, s.phone_batt_lbl, phone_known ? s.trip.phone_batt : 0xFF);
+    // The link mark lives here (the nav placeholder shows the device name while waiting); demo mode has no link.
+    lv_obj_set_hidden(s.link_lbl, s.demo);
+    lv_obj_set_hidden(s.demo_lbl, !s.demo);
+    lv_obj_set_style_text_color(s.link_lbl, s.connected && phone_known ? C_ACCENT : C_OFF, 0);
+
+    bool route = s.have_trip && s.trip.eta_epoch; // no ETA = no destination
+    char buf[24] = "--:--";
+    if (route) {
+        fmt_local_time(buf, sizeof buf, s.trip.eta_epoch);
+    }
+    lv_label_set_text(s.eta_lbl, buf);
+    lv_obj_set_style_text_color(s.eta_lbl, route ? C_ACCENT : C_OFF, 0);
+    lv_obj_set_style_text_color(s.eta_icon, route ? C_ACCENT : C_OFF, 0);
+
+    const char *unit = "";
+    if (route) {
+        fmt_distance(buf, sizeof buf, s.trip.remaining_m); // "12.4 km": number and unit go to separate labels
+        char *sp = strchr(buf, ' ');
+        if (sp) {
+            *sp = '\0';
+            unit = sp + 1;
+        }
+    } else {
+        strcpy(buf, "--");
+    }
+    lv_label_set_text(s.remain_lbl, buf);
+    lv_label_set_text(s.remain_unit, unit);
+    lv_obj_set_style_text_color(s.remain_lbl, route ? C_TEXT : C_OFF, 0);
+    lv_obj_set_style_text_color(s.remain_icon, route ? C_DIM : C_OFF, 0);
 }
 
 /** Start gliding the view toward the pose in m (s.scale is the new zoom target), and store m's route in the anchor frame. */
@@ -1418,7 +1548,6 @@ static void apply_trip(const trip_msg_t *m)
         settimeofday(&tv, NULL);
     }
     lv_label_set_text_fmt(s.speed_lbl, "%u", m->speed_kmh);
-    lv_label_set_text_fmt(s.trip_speed_lbl, "%u km/h", m->speed_kmh);
     if (m->limit_kmh) {
         lv_label_set_text_fmt(s.limit_lbl, "%u", m->limit_kmh);
         lv_obj_set_hidden(s.limit_ring, false);
@@ -1428,15 +1557,6 @@ static void apply_trip(const trip_msg_t *m)
         lv_obj_set_hidden(s.limit_ring, true);
         lv_obj_set_style_text_color(s.speed_lbl, C_TEXT, 0);
     }
-    char buf[24];
-    if (m->eta_epoch) {
-        fmt_local_time(buf, sizeof buf, m->eta_epoch);
-        lv_label_set_text(s.eta_lbl, buf);
-    } else {
-        lv_label_set_text(s.eta_lbl, "--:--");
-    }
-    fmt_distance(buf, sizeof buf, m->remaining_m);
-    lv_label_set_text_fmt(s.remain_lbl, "%s to go", buf);
     refresh_status();
 }
 
@@ -1480,13 +1600,11 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     lv_obj_set_scrollbar_mode(s.tv, LV_SCROLLBAR_MODE_OFF);
     s.tile_nav = lv_tileview_add_tile(s.tv, 0, 0, LV_DIR_RIGHT);
     s.tile_media = lv_tileview_add_tile(s.tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_trip = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_status = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_settings = lv_tileview_add_tile(s.tv, 4, 0, LV_DIR_LEFT);
+    s.tile_status = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_settings = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT);
     build_nav(s.tile_nav);
     build_media(s.tile_media);
     apply_media(&(media_msg_t){.state = MEDIA_NONE, .volume_pct = PROTO_UNKNOWN_VOLUME});
-    build_trip(s.tile_trip);
     build_status(s.tile_status);
     build_settings(s.tile_settings);
     s.brightness = brightness;
@@ -1500,7 +1618,6 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
 
     refresh_banner();
     refresh_status();
-    lv_label_set_text(s.dev_batt_lbl, "--");
     lvgl_port_unlock();
 }
 
@@ -1555,14 +1672,10 @@ void ui_set_connected(bool connected)
 void ui_set_device_battery(uint8_t pct, uint16_t mv)
 {
     lvgl_port_lock(0);
-    batt_set(s.dev_arc, s.dev_batt_lbl, mv ? pct : 0xFF); // mv 0 = no ADC reading
-    if (mv >= BATT_CHARGING_MV) {
-        lv_label_set_text(s.dev_sub_lbl, LV_SYMBOL_CHARGE " Charging");
-    } else if (mv) {
-        lv_label_set_text_fmt(s.dev_sub_lbl, "%u.%02u V", mv / 1000, mv % 1000 / 10);
-    } else {
-        lv_label_set_text(s.dev_sub_lbl, "");
-    }
+    batt_set(s.dev_bar, s.dev_batt_lbl, mv ? pct : 0xFF); // mv 0 = no ADC reading
+    bool charging = mv >= BATT_CHARGING_MV;
+    lv_obj_set_hidden(s.dev_icon, charging);
+    lv_obj_set_hidden(s.dev_charge, !charging);
     lvgl_port_unlock();
 }
 

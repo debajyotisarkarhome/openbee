@@ -12,8 +12,11 @@ const CURVE_NAMES = ['', 'GENTLE', 'MEDIUM', 'SHARP'];
 const MAP_BG = '#11151A';
 const C_PANEL = '#101418', C_PH_RING = '#1C232B';
 const PH_ICON_Y = 92, PH_ICON_D = 72, PH_PULSE_MAX_D = 200, PH_PULSE_MS = 2400;
-const BATT_ARC_W = 10, BATT_ARC_INSET = 4, BATT_ARC_GAP = 8, BATT_LOW_PCT = 15, BATT_MID_PCT = 35;
-const BATT_DEV_Y = 46, BATT_PHONE_Y = 128, BATT_DIVIDER_W = 100;
+const ARC_INSET = 4, BATT_LOW_PCT = 15, BATT_MID_PCT = 35;
+/** Status view geometry (mirrors CHIP_*, CLOCK_DY and TRIP_* in ui.c). */
+const C_OFF = '#3A4048';
+const CHIP_Y = 46, CHIP_DEV_X = 50, CHIP_PHONE_X = 118, CHIP_ICON = 16, CHIP_BAR_Y = 68, CHIP_BAR_W = 48, CHIP_BT_X = 180;
+const CLOCK_DY = -6, TRIP_ICON_Y = 148, TRIP_ICON = 18, TRIP_VAL_Y = 171, TRIP_COL_DX = 37, TRIP_DIV_Y = 150, TRIP_DIV_H = 42;
 const battColor = (pct: number) => (pct <= BATT_LOW_PCT ? '#FF2D2D' : pct <= BATT_MID_PCT ? '#FF8A00' : '#22C55E');
 const VIEW_MAX_M = 300;
 const FONT = (px: number) => `500 ${px}px Montserrat, "Helvetica Neue", Arial, sans-serif`;
@@ -37,26 +40,32 @@ export function newDeviceState(): DeviceState {
   };
 }
 
-/** Tile order, as in ui_init(): Nav, Media, Trip, Status, Settings. */
-export const TILE_NAV = 0, TILE_MEDIA = 1, TILE_TRIP = 2, TILE_STATUS = 3, TILE_SETTINGS = 4;
+/** Tile order, as in ui_init(): Nav, Media, Status, Settings. */
+export const TILE_NAV = 0, TILE_MEDIA = 1, TILE_STATUS = 2, TILE_SETTINGS = 3;
 
-/** Media view geometry (mirrors MEDIA_* and the media_button() calls in build_media() in ui.c). */
-const MEDIA_RING_INSET = 6, MEDIA_RING_W = 6, MEDIA_TITLE_Y = 44, MEDIA_TITLE_W = 130, MEDIA_ARTIST_Y = 68;
-const MEDIA_ARTIST_W = 120, MEDIA_ROW_Y = 120, MEDIA_VOL_Y = 190;
+/** −/+ pill (mirrors PILL_* in ui.c): dark rounded bar, 40 px buttons at the ends, level bar between them. */
+const PILL_X = 52, PILL_W = 136, PILL_H = 40, PILL_BAR_W = 52, PILL_BTN_EXT = 6;
+
+/** Media view geometry (mirrors MEDIA_* and the media_button()/pill() calls in build_media() in ui.c). */
+const MEDIA_TITLE_Y = 44, MEDIA_TITLE_W = 130, MEDIA_ARTIST_Y = 68;
+const MEDIA_ARTIST_W = 120, MEDIA_ROW_Y = 122, MEDIA_PILL_Y = 170;
 const MEDIA_PRESSED_BG = '#0E2A36';
 const LINE_H_20 = 22, LINE_H_14 = 16; // lv_font_get_line_height of Montserrat 20 / 14
-const MEDIA_BUTTONS: { cx: number; cy: number; d: number; cmd: MediaCmd; primary?: boolean }[] = [
-  { cx: 54, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.PREV },
-  { cx: 120, cy: MEDIA_ROW_Y, d: 70, cmd: MediaCmd.TOGGLE, primary: true },
-  { cx: 186, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.NEXT },
-  { cx: 92, cy: MEDIA_VOL_Y, d: 44, cmd: MediaCmd.VOL_DOWN },
-  { cx: 148, cy: MEDIA_VOL_Y, d: 44, cmd: MediaCmd.VOL_UP },
+const MEDIA_BUTTONS: { cx: number; cy: number; d: number; cmd: MediaCmd; primary?: boolean; pill?: boolean }[] = [
+  { cx: 56, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.PREV },
+  { cx: 120, cy: MEDIA_ROW_Y, d: 68, cmd: MediaCmd.TOGGLE, primary: true },
+  { cx: 184, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.NEXT },
+  { cx: PILL_X + PILL_H / 2, cy: MEDIA_PILL_Y + PILL_H / 2, d: PILL_H, cmd: MediaCmd.VOL_DOWN, pill: true },
+  { cx: PILL_X + PILL_W - PILL_H / 2, cy: MEDIA_PILL_Y + PILL_H / 2, d: PILL_H, cmd: MediaCmd.VOL_UP, pill: true },
 ];
 
 /** Settings view geometry, shared with the simulator's tap handling (mirrors BRIGHT_* in ui.c). */
 export const BRIGHT_MIN = 5, BRIGHT_STEP = 10;
-const BRIGHT_ARC_W = 14, BRIGHT_ARC_START = 135, BRIGHT_ARC_END = 45;
-export const BRIGHT_BTN_R = 28, BRIGHT_BTN_DX = 38, BRIGHT_BTN_CY = 140 + 28;
+const BRIGHT_ARC_W = 4, BRIGHT_ARC_START = 135, BRIGHT_ARC_END = 45, BRIGHT_KNOB_PAD = 5;
+const BRIGHT_SUN_Y = 48, BRIGHT_SUN = 24, BRIGHT_PILL_Y = 150;
+/** The pill's −/+ touch areas, for the simulator's tap handling. */
+export const BRIGHT_BTN_R = PILL_H / 2 + PILL_BTN_EXT, BRIGHT_BTN_DX = PILL_W / 2 - PILL_H / 2;
+export const BRIGHT_BTN_CY = BRIGHT_PILL_Y + PILL_H / 2;
 
 /** Same 10 % snapping as bright_step() in ui.c. */
 export function brightnessStep(v: number, dir: 1 | -1): number {
@@ -124,8 +133,7 @@ export class DisplayRenderer {
       c.translate(x, 0);
       if (t === TILE_NAV) this.drawNav(st, nowMs);
       else if (t === TILE_MEDIA) this.drawMedia(st);
-      else if (t === TILE_TRIP) this.drawTrip(st, deviceClockS, tzMin);
-      else if (t === TILE_STATUS) this.drawStatus(st);
+      else if (t === TILE_STATUS) this.drawStatus(st, deviceClockS, tzMin);
       else this.drawSettings(st);
       c.restore();
     }
@@ -435,7 +443,7 @@ export class DisplayRenderer {
   // ---------- Media tile ----------
   /** The Media button whose circle contains (x, y) in device px, or null (the page has no tap-to-go-back). */
   mediaHit(x: number, y: number): MediaCmd | null {
-    for (const b of MEDIA_BUTTONS) if (Math.hypot(x - b.cx, y - b.cy) <= b.d / 2) return b.cmd;
+    for (const b of MEDIA_BUTTONS) if (Math.hypot(x - b.cx, y - b.cy) <= b.d / 2 + (b.pill ? PILL_BTN_EXT : 0)) return b.cmd;
     return null;
   }
 
@@ -446,38 +454,41 @@ export class DisplayRenderer {
     const active = m.state === MediaState.PLAYING || m.state === MediaState.PAUSED;
     const vol = active && m.volumePct != null ? Math.min(100, m.volumePct) : 0;
 
-    // lv_arc, pad = inset: the stroke centre sits a further width/2 in. Rotation 270 = start at 12 o'clock.
-    const r = W / 2 - MEDIA_RING_INSET - MEDIA_RING_W / 2;
-    c.lineWidth = MEDIA_RING_W;
-    c.lineCap = 'round';
-    c.beginPath();
-    c.arc(CX, CX, r, 0, Math.PI * 2);
-    c.strokeStyle = C_PH_RING;
-    c.stroke();
-    if (vol > 0) {
-      c.beginPath();
-      c.arc(CX, CX, r, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * vol) / 100);
-      c.strokeStyle = C_ACCENT;
-      c.stroke();
-    }
-
     const titled = active && m.title !== ''; // no metadata yet reads as nothing playing (as in ui.c)
     this.text(this.ellipsize(titled ? m.title : 'Nothing playing', 20, MEDIA_TITLE_W), CX, MEDIA_TITLE_Y + LINE_H_20 / 2, 20, C_TEXT);
     if (titled && m.artist) {
       this.text(this.ellipsize(m.artist, 14, MEDIA_ARTIST_W), CX, MEDIA_ARTIST_Y + LINE_H_14 / 2, 14, C_DIM);
     }
 
+    this.pill(MEDIA_PILL_Y, vol / 100);
     for (const b of MEDIA_BUTTONS) {
       const pressed = this.mediaPressed === b.cmd;
-      c.beginPath();
-      c.arc(b.cx, b.cy, b.d / 2 - 1, 0, Math.PI * 2);
-      c.fillStyle = pressed ? MEDIA_PRESSED_BG : b.primary ? C_ACCENT : C_PANEL;
-      c.fill();
-      c.strokeStyle = pressed || b.primary ? C_ACCENT : C_PH_RING;
-      c.lineWidth = 2;
-      c.stroke();
+      if (b.pill) {
+        if (pressed) {
+          c.beginPath();
+          c.arc(b.cx, b.cy, b.d / 2, 0, Math.PI * 2);
+          c.fillStyle = MEDIA_PRESSED_BG;
+          c.fill();
+        }
+      } else {
+        c.beginPath();
+        c.arc(b.cx, b.cy, b.d / 2 - 1, 0, Math.PI * 2);
+        c.fillStyle = pressed ? MEDIA_PRESSED_BG : b.primary ? C_ACCENT : C_PANEL;
+        c.fill();
+        c.strokeStyle = pressed || b.primary ? C_ACCENT : C_PANEL;
+        c.lineWidth = 2;
+        c.stroke();
+      }
       this.mediaGlyph(b.cmd, b.cx, b.cy, b.primary ? '#000000' : C_TEXT, m.state === MediaState.PLAYING);
     }
+  }
+
+  /** Port of pill() in ui.c: the dark rounded bar and its level bar (k = 0…1); callers draw the −/+ glyphs. */
+  private pill(y: number, k: number) {
+    this.roundRect(PILL_X, y, PILL_W, PILL_H, PILL_H / 2, C_PANEL);
+    const bx = CX - PILL_BAR_W / 2, by = y + PILL_H / 2 - 2;
+    this.roundRect(bx, by, PILL_BAR_W, 4, 2, C_PH_RING);
+    if (k > 0) this.roundRect(bx, by, PILL_BAR_W * k, 4, 2, C_ACCENT);
   }
 
   /** Stand-ins for LV_SYMBOL_PREV/PLAY/PAUSE/NEXT/MINUS/PLUS (the canvas has no FontAwesome glyphs). */
@@ -517,57 +528,115 @@ export class DisplayRenderer {
     }
   }
 
-  // ---------- Trip / Status tiles ----------
-  private drawTrip(st: DeviceState, clockS: number, tzMin: number) {
-    this.text(clockS > 1_700_000_000 ? fmtClock(clockS, tzMin) : '--:--', CX, 63, 40, C_TEXT);
-    this.text('ARRIVAL', CX, 102, 14, C_DIM);
-    const t = st.trip;
-    this.text(t && t.etaEpoch ? fmtClock(t.etaEpoch, tzMin) : '--:--', CX, 128, 28, C_ACCENT);
-    if (t) {
-      this.text(`${fmtDistance(t.remainingM)} to go`, CX, 164, 20, C_TEXT);
-      this.text(`${t.speedKmh} km/h`, CX, 198, 14, C_DIM);
+  // ---------- Status tile ----------
+  /** Port of icon_draw_cb() in ui.c: line-art icons on a 24-unit grid. */
+  private icon(kind: 'device' | 'phone' | 'flag' | 'route' | 'bt' | 'sun', x: number, y: number, size: number, color: string) {
+    const c = this.ctx;
+    c.save();
+    c.translate(x, y);
+    c.scale(size / 24, size / 24);
+    c.strokeStyle = color;
+    c.fillStyle = color;
+    c.lineWidth = 2.2;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    const poly = (...p: number[]) => {
+      c.beginPath();
+      c.moveTo(p[0], p[1]);
+      for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]);
+      c.closePath();
+      c.fill();
+    };
+    c.beginPath();
+    if (kind === 'device') {
+      c.arc(12, 12, 8, 0, Math.PI * 2);
+      c.stroke();
+      poly(12, 7, 16, 15, 12, 12.8, 8, 15);
+    } else if (kind === 'phone') {
+      c.roundRect(7.5, 3.5, 9, 17, 2);
+      c.moveTo(10, 18.5);
+      c.lineTo(14, 18.5);
+      c.stroke();
+    } else if (kind === 'flag') {
+      c.moveTo(5, 3);
+      c.lineTo(5, 22);
+      c.stroke();
+      poly(5, 4, 18, 4, 15, 8.5, 18, 13, 5, 13);
+    } else if (kind === 'route') {
+      c.arc(6, 19, 2.4, 0, Math.PI * 2);
+      c.arc(18, 5, 2.4, 0, Math.PI * 2);
+      c.fill();
+      c.beginPath();
+      c.setLineDash([3, 2.4]);
+      c.moveTo(6, 16.5);
+      c.bezierCurveTo(6, 11.5, 18, 12.5, 18, 7.5);
+      c.stroke();
+    } else if (kind === 'sun') {
+      c.arc(12, 12, 4.5, 0, Math.PI * 2);
+      c.fill();
+      c.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const ux = Math.cos((i * Math.PI) / 4), uy = Math.sin((i * Math.PI) / 4);
+        c.moveTo(12 + 7.5 * ux, 12 + 7.5 * uy);
+        c.lineTo(12 + 10 * ux, 12 + 10 * uy);
+      }
+      c.stroke();
+    } else { // LV_SYMBOL_BLUETOOTH
+      c.lineWidth = 2;
+      c.moveTo(7, 7);
+      c.lineTo(17, 17);
+      c.lineTo(12, 21);
+      c.lineTo(12, 3);
+      c.lineTo(17, 7);
+      c.lineTo(7, 17);
+      c.stroke();
     }
+    c.restore();
   }
 
-  /** Port of build_status()/batt_set() in ui.c: semicircle gauges on the edge, device top, phone bottom. */
-  private drawStatus(st: DeviceState) {
-    const c = this.ctx;
-    const deg = Math.PI / 180;
-    const r = W / 2 - BATT_ARC_INSET - BATT_ARC_W / 2;
-    const span = 180 - 2 * BATT_ARC_GAP;
-    const arc = (a0: number, a1: number, color: string) => {
-      c.beginPath();
-      c.arc(CX, CX, r, a0 * deg, a1 * deg);
-      c.strokeStyle = color;
-      c.lineWidth = BATT_ARC_W;
-      c.lineCap = 'round';
-      c.stroke();
+  /** Port of build_status()/refresh_status() in ui.c: battery chips, clock, arrival | distance under icons. */
+  private drawStatus(st: DeviceState, clockS: number, tzMin: number) {
+    const chip = (x: number, kind: 'device' | 'phone', pct: number | null) => {
+      this.icon(kind, x, CHIP_Y, CHIP_ICON, C_DIM);
+      // Labels are placed by their top edge in ui.c; text() takes the centre (Montserrat 14 is 16 px tall).
+      const low = pct != null && pct <= BATT_MID_PCT;
+      this.text(pct != null ? `${pct}%` : '--', x + 20, CHIP_Y + 1 + LINE_H_14 / 2, 14,
+        pct == null ? C_DIM : low ? battColor(pct) : C_TEXT, 'left');
+      this.roundRect(x, CHIP_BAR_Y, CHIP_BAR_W, 4, 2, C_PH_RING);
+      if (pct != null && pct > 0) this.roundRect(x, CHIP_BAR_Y, (CHIP_BAR_W * pct) / 100, 4, 2, battColor(pct));
     };
     const pb = st.trip?.phoneBatt ?? null;
-    // Device: top half, 180+gap → 360-gap clockwise, filled left → right.
-    // Phone: bottom half, gap → 180-gap clockwise (right → left), filled back from the left end.
-    arc(180 + BATT_ARC_GAP, 360 - BATT_ARC_GAP, C_PH_RING);
-    if (st.deviceBattPct > 0) arc(180 + BATT_ARC_GAP, 180 + BATT_ARC_GAP + (span * st.deviceBattPct) / 100, battColor(st.deviceBattPct));
-    arc(BATT_ARC_GAP, 180 - BATT_ARC_GAP, C_PH_RING);
-    if (pb != null && pb > 0) arc(180 - BATT_ARC_GAP - (span * pb) / 100, 180 - BATT_ARC_GAP, battColor(pb));
+    chip(CHIP_DEV_X, 'device', st.deviceBattPct); // the simulator never charges, so no bolt
+    chip(CHIP_PHONE_X, 'phone', pb);
+    this.icon('bt', CHIP_BT_X, CHIP_Y + 2, 14, st.connected && pb != null ? C_ACCENT : C_OFF);
 
-    this.roundRect(CX - BATT_DIVIDER_W / 2, CX - 1, BATT_DIVIDER_W, 2, 0, C_PH_RING);
-    // batt_block(): caption top y, percentage top y+16, sub-line top y+48 (text() takes centres).
-    const block = (y: number, caption: string, pct: number | null, sub: string) => {
-      this.text(caption, CX, y + 8, 14, C_DIM);
-      this.text(pct != null ? `${pct}%` : '--', CX, y + 32, 28, C_TEXT);
-      if (sub) this.text(sub, CX, y + 56, 14, C_DIM);
-    };
-    block(BATT_DEV_Y, 'DEVICE', st.deviceBattPct, ''); // the simulator has no battery voltage
-    block(BATT_PHONE_Y, 'PHONE', pb, !st.connected ? 'offline' : pb != null ? 'connected' : 'no data');
+    this.text(clockS > 1_700_000_000 ? fmtClock(clockS, tzMin) : '--:--', CX, CX + CLOCK_DY, 40, C_TEXT);
+
+    this.roundRect(CX - 1, TRIP_DIV_Y, 2, TRIP_DIV_H, 0, C_PH_RING);
+    const t = st.trip;
+    const route = !!t && t.etaEpoch !== 0;
+    const left = CX - TRIP_COL_DX, right = CX + TRIP_COL_DX, valY = TRIP_VAL_Y + LINE_H_20 / 2;
+    this.icon('flag', left - TRIP_ICON / 2, TRIP_ICON_Y, TRIP_ICON, route ? C_ACCENT : C_OFF);
+    this.text(route ? fmtClock(t.etaEpoch, tzMin) : '--:--', left, valY, 20, route ? C_ACCENT : C_OFF);
+    this.icon('route', right - TRIP_ICON / 2, TRIP_ICON_Y, TRIP_ICON, route ? C_DIM : C_OFF);
+    const [num, unit] = route ? fmtDistance(t.remainingM).split(' ') : ['--', ''];
+    // Number (20 px) and unit (14 px) centred together, 4 px apart, bottoms aligned (flex row in ui.c).
+    const c = this.ctx;
+    c.font = FONT(20);
+    const wn = c.measureText(num).width;
+    c.font = FONT(14);
+    const wu = unit ? c.measureText(unit).width + 4 : 0;
+    const x0 = right - (wn + wu) / 2;
+    this.text(num, x0, valY, 20, route ? C_TEXT : C_OFF, 'left');
+    if (unit) this.text(unit, x0 + wn + 4, valY + 1, 14, C_DIM, 'left');
   }
 
-  /** Port of build_settings() in ui.c: brightness gauge open at the bottom, big value, −/+ buttons. */
+  /** Port of build_settings() in ui.c: thin brightness dial open at the bottom, sun, big value, −/+ pill. */
   private drawSettings(st: DeviceState) {
     const c = this.ctx;
     const deg = Math.PI / 180;
-    // lv_arc with pad = inset + width/2: stroke centre sits a further width/2 in.
-    const r = W / 2 - (BATT_ARC_INSET + BRIGHT_ARC_W / 2) - BRIGHT_ARC_W / 2;
+    // lv_arc with pad = inset + knob pad: stroke centre sits a further width/2 in.
+    const r = W / 2 - (ARC_INSET + BRIGHT_KNOB_PAD) - BRIGHT_ARC_W / 2;
     const span = 360 - BRIGHT_ARC_START + BRIGHT_ARC_END;
     const k = (st.brightnessPct - BRIGHT_MIN) / (100 - BRIGHT_MIN);
     const end = BRIGHT_ARC_START + span * k;
@@ -582,22 +651,15 @@ export class DisplayRenderer {
     c.strokeStyle = C_ACCENT;
     c.stroke();
     c.beginPath();
-    c.arc(CX + Math.cos(end * deg) * r, CX + Math.sin(end * deg) * r, BRIGHT_ARC_W / 2 + 3, 0, Math.PI * 2);
+    c.arc(CX + Math.cos(end * deg) * r, CX + Math.sin(end * deg) * r, BRIGHT_ARC_W / 2 + BRIGHT_KNOB_PAD, 0, Math.PI * 2);
     c.fillStyle = C_TEXT;
     c.fill();
 
-    this.text('BRIGHTNESS', CX, 66, 14, C_DIM);
+    this.icon('sun', CX - BRIGHT_SUN / 2, BRIGHT_SUN_Y, BRIGHT_SUN, C_DIM);
     this.text(`${st.brightnessPct}%`, CX, 104, 40, C_TEXT);
-    for (const [dx, sym] of [[-BRIGHT_BTN_DX, '−'], [BRIGHT_BTN_DX, '+']] as const) {
-      c.beginPath();
-      c.arc(CX + dx, BRIGHT_BTN_CY, BRIGHT_BTN_R - 1, 0, Math.PI * 2);
-      c.fillStyle = C_PANEL;
-      c.fill();
-      c.strokeStyle = C_PH_RING;
-      c.lineWidth = 2;
-      c.stroke();
-      this.text(sym, CX + dx, BRIGHT_BTN_CY + 1, 28, C_TEXT);
-    }
+    this.pill(BRIGHT_PILL_Y, k);
+    this.mediaGlyph(MediaCmd.VOL_DOWN, CX - BRIGHT_BTN_DX, BRIGHT_BTN_CY, C_TEXT, false);
+    this.mediaGlyph(MediaCmd.VOL_UP, CX + BRIGHT_BTN_DX, BRIGHT_BTN_CY, C_TEXT, false);
   }
 
   // ---------- overlays ----------
