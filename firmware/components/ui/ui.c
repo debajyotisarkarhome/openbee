@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "src/core/lv_obj_event_private.h" // lv_hit_test_info_t, for the brightness knob's custom hit test
 
@@ -941,6 +942,47 @@ static lv_obj_t *media_button(lv_obj_t *t, int32_t cx, int32_t cy, int32_t d, co
     return l;
 }
 
+/**
+ * Bake the Media page's static artwork (ring track, button discs and the four fixed icons) into one PSRAM image.
+ * LVGL's software renderer is slow at circles and icon glyphs and redraws every object once per draw strip, so
+ * drawing them live cost ~30 ms a frame and made swipes next to Nav stutter. The real objects stay on top for
+ * touch, the pressed look, the play/pause icon and the volume fill. If PSRAM or the snapshot fails, the page
+ * just keeps drawing everything live.
+ */
+static void bake_media_art(lv_obj_t *t, lv_obj_t *const *btn_lbls, size_t n)
+{
+    static lv_draw_buf_t art;
+    uint32_t size = LV_DRAW_BUF_SIZE(W, H, LV_COLOR_FORMAT_RGB565);
+    void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    lv_obj_set_hidden(s.media_play_lbl, true); // play/pause changes, so it stays live
+    lv_obj_update_layout(t);
+    bool ok = data && lv_draw_buf_init(&art, W, H, LV_COLOR_FORMAT_RGB565, 0, data, size) == LV_RESULT_OK &&
+              lv_snapshot_take_to_draw_buf(t, LV_COLOR_FORMAT_RGB565, &art) == LV_RESULT_OK;
+    lv_obj_set_hidden(s.media_play_lbl, false);
+    if (!ok) {
+        heap_caps_free(data);
+        return;
+    }
+
+    lv_obj_t *img = lv_image_create(t);
+    lv_image_set_src(img, &art);
+    lv_obj_set_pos(img, 0, 0);
+    lv_obj_move_to_index(img, 0);
+    lv_obj_set_style_bg_opa(t, LV_OPA_TRANSP, 0); // the image covers the tile
+    lv_obj_set_style_arc_opa(s.media_ring, LV_OPA_TRANSP, LV_PART_MAIN); // track is in the image; fill stays live
+    for (size_t i = 0; i < n; i++) {
+        // Idle buttons draw nothing; pressed ones draw their disc, border and (inherited text_opa) icon as before.
+        lv_obj_t *b = lv_obj_get_parent(btn_lbls[i]);
+        lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_opa(b, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_opa(b, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_set_style_border_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_set_style_text_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+    }
+    lv_obj_set_style_text_opa(s.media_play_lbl, LV_OPA_COVER, 0); // not in the image, so always drawn
+}
+
 static void build_media(lv_obj_t *t)
 {
     style_tile(t);
@@ -974,12 +1016,15 @@ static void build_media(lv_obj_t *t)
     lv_obj_set_style_text_align(s.media_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s.media_artist, LV_ALIGN_TOP_MID, 0, MEDIA_ARTIST_Y);
 
-    media_button(t, 54, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_PREV, MEDIA_CMD_PREV, false, false);
-    s.media_play_lbl =
-        media_button(t, 120, MEDIA_ROW_Y, 70, &lv_font_montserrat_28, LV_SYMBOL_PLAY, MEDIA_CMD_TOGGLE, true, false);
-    media_button(t, 186, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_NEXT, MEDIA_CMD_NEXT, false, false);
-    media_button(t, 92, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_MINUS, MEDIA_CMD_VOL_DOWN, false, true);
-    media_button(t, 148, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_PLUS, MEDIA_CMD_VOL_UP, false, true);
+    lv_obj_t *btns[] = {
+        media_button(t, 54, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_PREV, MEDIA_CMD_PREV, false, false),
+        s.media_play_lbl =
+            media_button(t, 120, MEDIA_ROW_Y, 70, &lv_font_montserrat_28, LV_SYMBOL_PLAY, MEDIA_CMD_TOGGLE, true, false),
+        media_button(t, 186, MEDIA_ROW_Y, 48, &lv_font_montserrat_20, LV_SYMBOL_NEXT, MEDIA_CMD_NEXT, false, false),
+        media_button(t, 92, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_MINUS, MEDIA_CMD_VOL_DOWN, false, true),
+        media_button(t, 148, MEDIA_VOL_Y, 44, &lv_font_montserrat_20, LV_SYMBOL_PLUS, MEDIA_CMD_VOL_UP, false, true),
+    };
+    bake_media_art(t, btns, sizeof btns / sizeof btns[0]);
 }
 
 static void apply_media(const media_msg_t *m)
@@ -1069,6 +1114,116 @@ static void refresh_banner(void)
     } else {
         lv_obj_set_hidden(s.banner, true);
     }
+}
+
+// ---------- swipe snapshots ----------
+//
+// A frame mid-swipe shows parts of two tiles, and LVGL's software renderer pays nearly the full cost of both
+// (every object is set up again for each draw strip, however little of it shows): ~55 ms, ~18 FPS. So when a
+// swipe starts, the active tile and its neighbours are rendered once into PSRAM images and the swipe slides
+// those; the live widgets are skipped (opa 0) until it settles. Costs one ~40 ms frame at the start, and the
+// map stands still for the swipe. Without PSRAM it just stays live.
+
+#define TILE_COUNT 5
+#define SNAP_BUFS 3 // the active tile and both neighbours
+static lv_obj_t *s_tiles[TILE_COUNT];
+static lv_obj_t *s_snap_img[TILE_COUNT]; // per tile, hidden unless a swipe is showing it
+static lv_draw_buf_t s_snap_buf[SNAP_BUFS];
+static bool s_snap_ready, s_snapping;
+static lv_timer_t *s_snap_timer;
+
+/** Show a tile's live widgets, or hide them (opa 0: not drawn, still laid out) behind its snapshot. */
+static void tile_set_live(int i, bool live)
+{
+    lv_obj_t *t = s_tiles[i];
+    for (uint32_t k = 0; k < lv_obj_get_child_count(t); k++) {
+        lv_obj_t *c = lv_obj_get_child(t, k);
+        if (c == s_snap_img[i]) {
+            continue;
+        }
+        if (live) {
+            lv_obj_remove_local_style_prop(c, LV_STYLE_OPA, 0);
+        } else {
+            lv_obj_set_style_opa(c, LV_OPA_TRANSP, 0);
+        }
+    }
+    lv_obj_set_hidden(s_snap_img[i], live);
+}
+
+static void swipe_begin(void)
+{
+    if (!s_snap_ready || s_snapping) {
+        return;
+    }
+    int act = 0;
+    for (int i = 0; i < TILE_COUNT; i++) {
+        if (s_tiles[i] == lv_tileview_get_tile_active(s.tv)) {
+            act = i;
+        }
+    }
+    int b = 0;
+    for (int i = act - 1; i <= act + 1; i++) {
+        if (i < 0 || i >= TILE_COUNT ||
+            lv_snapshot_take_to_draw_buf(s_tiles[i], LV_COLOR_FORMAT_RGB565, &s_snap_buf[b]) != LV_RESULT_OK) {
+            continue;
+        }
+        lv_image_set_src(s_snap_img[i], &s_snap_buf[b++]);
+        lv_obj_move_foreground(s_snap_img[i]);
+        lv_obj_invalidate(s_snap_img[i]);
+        tile_set_live(i, false);
+    }
+    s_snapping = true;
+    lv_timer_resume(s_snap_timer);
+}
+
+/** Polled during a swipe: scroll begin/end events nest (drag, snap animation, a re-grab), so ask LVGL instead. */
+static void swipe_poll(lv_timer_t *tm)
+{
+    if (lv_obj_is_scrolling(s.tv)) {
+        return;
+    }
+    for (int i = 0; i < TILE_COUNT; i++) {
+        if (!lv_obj_is_hidden(s_snap_img[i])) {
+            tile_set_live(i, true);
+        }
+    }
+    s_snapping = false;
+    lv_timer_pause(tm);
+}
+
+// Runs in the LVGL task (port lock held).
+static void tv_scroll_begin(lv_event_t *e)
+{
+    // A finger drag (pointer down, no animation) or an animated tile change; an instant jump has nothing to slide.
+    lv_indev_t *indev = lv_indev_active();
+    bool drag = indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
+    if (drag || lv_event_get_param(e)) {
+        swipe_begin();
+    }
+}
+
+static void init_swipe_snapshots(void)
+{
+    lv_obj_t *tiles[TILE_COUNT] = {s.tile_nav, s.tile_media, s.tile_trip, s.tile_status, s.tile_settings};
+    uint32_t size = LV_DRAW_BUF_SIZE(W, H, LV_COLOR_FORMAT_RGB565);
+    for (int b = 0; b < SNAP_BUFS; b++) {
+        void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+        if (!data || lv_draw_buf_init(&s_snap_buf[b], W, H, LV_COLOR_FORMAT_RGB565, 0, data, size) != LV_RESULT_OK) {
+            heap_caps_free(data); // earlier buffers stay allocated but unused; this only happens without PSRAM
+            return;
+        }
+    }
+    for (int i = 0; i < TILE_COUNT; i++) {
+        s_tiles[i] = tiles[i];
+        s_snap_img[i] = lv_image_create(tiles[i]);
+        lv_obj_set_pos(s_snap_img[i], 0, 0);
+        lv_obj_set_clickable(s_snap_img[i], false);
+        lv_obj_set_hidden(s_snap_img[i], true);
+    }
+    s_snap_timer = lv_timer_create(swipe_poll, 30, NULL);
+    lv_timer_pause(s_snap_timer);
+    lv_obj_add_event_cb(s.tv, tv_scroll_begin, LV_EVENT_SCROLL_BEGIN, NULL);
+    s_snap_ready = true;
 }
 
 // Runs in the LVGL task (port lock held).
@@ -1339,6 +1494,7 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     s.on_brightness = on_brightness;
     build_overlays();
     lv_obj_add_event_cb(s.tv, tile_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    init_swipe_snapshots();
     lv_timer_create(clock_tick, 1000, NULL);
     lv_timer_create(anim_tick, ANIM_PERIOD_MS, NULL);
 

@@ -20,7 +20,12 @@ static const char *TAG = "board";
 
 #define LCD_HOST SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ (80 * 1000 * 1000)
-#define LCD_DRAW_LINES 40
+// Whole frames, rendered in PSRAM: drawing in strips sent each strip to the panel ~7 ms apart, so a moving
+// page sheared into bands that visibly slid at different times. A full frame reaches the panel in one sweep.
+// DMA can't read PSRAM fast enough while the CPU renders (TX underflow), so the SPI driver copies each chunk
+// into an internal DMA buffer; queue depth × chunk bounds that internal RAM (~58 KB).
+#define LCD_CHUNK_LINES 40
+#define LCD_TRANS_QUEUE_DEPTH 3
 #define BL_LEDC_CHANNEL LEDC_CHANNEL_0
 
 static adc_oneshot_unit_handle_t s_adc;
@@ -66,7 +71,7 @@ lv_display_t *board_display_init(void)
         .miso_io_num = -1,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = BOARD_LCD_H_RES * LCD_DRAW_LINES * sizeof(uint16_t),
+        .max_transfer_sz = BOARD_LCD_H_RES * LCD_CHUNK_LINES * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
 
@@ -76,7 +81,7 @@ lv_display_t *board_display_init(void)
         .dc_gpio_num = CONFIG_OPENBEE_LCD_DC,
         .spi_mode = 0,
         .pclk_hz = LCD_PIXEL_CLOCK_HZ,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = LCD_TRANS_QUEUE_DEPTH,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
     };
@@ -128,7 +133,7 @@ lv_display_t *board_display_init(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io,
         .panel_handle = panel,
-        .buffer_size = BOARD_LCD_H_RES * LCD_DRAW_LINES,
+        .buffer_size = BOARD_LCD_H_RES * BOARD_LCD_V_RES,
         .double_buffer = true,
         .hres = BOARD_LCD_H_RES,
         .vres = BOARD_LCD_V_RES,
@@ -136,7 +141,7 @@ lv_display_t *board_display_init(void)
         .color_format = LV_COLOR_FORMAT_RGB565,
         // Applied to the panel by esp_lvgl_port. If the image is mirrored on your unit, flip mirror_x here.
         .rotation = {.swap_xy = false, .mirror_x = true, .mirror_y = false},
-        .flags = {.buff_dma = true, .swap_bytes = true},
+        .flags = {.buff_spiram = true, .swap_bytes = true},
     };
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
 
