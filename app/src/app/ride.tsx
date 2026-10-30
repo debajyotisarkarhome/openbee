@@ -5,10 +5,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Maneuver, NavState } from '../core/proto';
 import { isSimulating, stopRide } from '../services/runtime';
-import { Badge, Button, Card, EmptyState, StatTile } from '../ui/components';
+import { Badge, Button, EmptyState, StatTile } from '../ui/components';
 import { useLink, useSession, useSettings } from '../ui/hooks';
 import { RoadShape } from '../ui/RoadShape';
-import { colors, curveColors, fmtClock, fmtDistance, radius, space, speedLabel, toSpeed, type } from '../ui/theme';
+import { colors, curveColors, fmtClock, fmtDistance, layout, radius, space, speedLabel, toSpeed, type } from '../ui/theme';
 
 const MANEUVER_TEXT: Record<Maneuver, string> = {
   [Maneuver.NONE]: '',
@@ -47,9 +47,9 @@ const MANEUVER_ICON: Partial<Record<Maneuver, keyof typeof Ionicons.glyphMap>> =
 };
 
 const STATE_BANNER: Partial<Record<NavState, { label: string; tone: string; icon: keyof typeof Ionicons.glyphMap }>> = {
-  [NavState.REROUTING]: { label: 'Rerouting…', tone: colors.warn, icon: 'refresh' },
-  [NavState.GPS_LOST]: { label: 'GPS signal lost', tone: colors.bad, icon: 'warning' },
-  [NavState.ARRIVED]: { label: 'You have arrived', tone: colors.ok, icon: 'checkmark-circle' },
+  [NavState.REROUTING]: { label: 'rerouting…', tone: colors.warn, icon: 'refresh' },
+  [NavState.GPS_LOST]: { label: 'gps signal lost', tone: colors.bad, icon: 'warning' },
+  [NavState.ARRIVED]: { label: 'you have arrived', tone: colors.ok, icon: 'checkmark' },
 };
 
 const CURVE_TEXT = ['', 'Gentle', 'Medium', 'Sharp'];
@@ -72,19 +72,20 @@ export default function RideScreen() {
   return (
     <ScrollView
       style={styles.screen}
-      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xl }]}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + layout.section, paddingBottom: insets.bottom + layout.bottom }]}
     >
       <View style={styles.statusRow}>
         <Badge
           label={ble.status === 'connected' ? (ble.deviceName ?? 'Display') : 'No display'}
-          tone={ble.status === 'connected' ? colors.ok : colors.warn}
+          tone={ble.status === 'connected' ? colors.ok : colors.bad}
+          ink={ble.status === 'connected' ? colors.ok : undefined}
         />
-        {isSimulating() ? <Badge label="SIMULATED" tone={colors.accent} /> : null}
+        {isSimulating() ? <Badge label="Simulated" tone={colors.accent} /> : null}
       </View>
 
       {banner ? (
         <View style={[styles.banner, { backgroundColor: banner.tone }]}>
-          <Ionicons name={banner.icon} size={18} color="#FFFFFF" />
+          <Ionicons name={banner.icon} size={16} color={colors.accentInk} />
           <Text style={styles.bannerText}>{banner.label}</Text>
         </View>
       ) : null}
@@ -93,113 +94,98 @@ export default function RideScreen() {
 
       {s ? (
         <>
-          <Card style={styles.hero}>
+          <View style={styles.hero}>
             <View style={styles.heroTop}>
-              <View style={styles.arrowBubble}>
-                <Ionicons name={MANEUVER_ICON[s.nav.maneuver as Maneuver] ?? 'navigate'} size={34} color={colors.accent} />
-              </View>
-              <View style={styles.heroText}>
-                <Text style={styles.heroDist}>{s.nav.distM != null ? fmtDistance(s.nav.distM, prefs.units) : '--'}</Text>
-                <Text style={styles.heroManeuver} numberOfLines={1}>
-                  {MANEUVER_TEXT[s.nav.maneuver as Maneuver]}
-                  {s.nav.maneuver === Maneuver.ROUNDABOUT && s.nav.exit ? ` · exit ${s.nav.exit}` : ''}
-                </Text>
-              </View>
-            </View>
-            {s.nav.street ? (
-              <Text style={styles.street} numberOfLines={1}>
-                {s.nav.street}
+              <Ionicons name={MANEUVER_ICON[s.nav.maneuver as Maneuver] ?? 'navigate'} size={52} color={colors.accent} />
+              <Text style={styles.heroDist} numberOfLines={1} adjustsFontSizeToFit>
+                {s.nav.distM != null ? fmtDistance(s.nav.distM, prefs.units) : '--'}
               </Text>
-            ) : null}
+            </View>
+            <Text style={styles.heroManeuver} numberOfLines={1}>
+              {MANEUVER_TEXT[s.nav.maneuver as Maneuver]}
+              {s.nav.maneuver === Maneuver.ROUNDABOUT && s.nav.exit ? `, exit ${s.nav.exit}` : ''}
+              {s.nav.street ? <Text style={styles.street}>{`  ${s.nav.street}`}</Text> : null}
+            </Text>
             {s.nav.curveClass >= 2 && s.nav.curveDistM <= 400 ? (
               <View style={[styles.curve, { backgroundColor: curveColors[s.nav.curveClass] }]}>
                 <Ionicons name={s.nav.curveDir < 0 ? 'arrow-back' : 'arrow-forward'} size={14} color="#000" />
                 <Text style={styles.curveText}>
-                  {CURVE_TEXT[s.nav.curveClass].toUpperCase()} in {fmtDistance(s.nav.curveDistM, prefs.units)}
+                  {CURVE_TEXT[s.nav.curveClass].toLowerCase()} curve in {fmtDistance(s.nav.curveDistM, prefs.units)}
                 </Text>
               </View>
             ) : null}
-          </Card>
+          </View>
 
           {prefs.showRoadShape ? (
-            <>
+            <View style={styles.hero}>
               <RoadShape points={s.nav.points} maneuverIdx={s.nav.maneuverIdx} streets={v.streets} />
-              {v.roadsError ? (
-                <View style={styles.note}>
-                  <Ionicons name="cloud-offline-outline" size={14} color={colors.warn} />
-                  <Text style={styles.noteText}>{v.roadsError}</Text>
-                </View>
-              ) : null}
-            </>
+              {v.roadsError ? <Text style={styles.noteText}>{v.roadsError}</Text> : null}
+            </View>
           ) : null}
 
-          <View style={styles.tiles}>
-            <StatTile
-              label="Speed"
-              value={`${toSpeed(s.speedKmh, prefs.units)}`}
-              unit={speedLabel(prefs.units)}
-              tone={over ? colors.bad : undefined}
-            />
-            <StatTile
-              label="Limit"
-              value={s.limitKmh != null ? `${toSpeed(s.limitKmh, prefs.units)}` : '–'}
-              unit={s.limitKmh != null ? speedLabel(prefs.units) : undefined}
-            />
-          </View>
-          <View style={styles.tiles}>
-            <StatTile label="Arrive" value={fmtClock(s.etaEpoch)} />
-            <StatTile label="Remaining" value={fmtDistance(s.remainingM, prefs.units)} />
+          <View style={styles.readouts}>
+            <View style={styles.tiles}>
+              <StatTile
+                icon="speedometer-outline"
+                label="Speed"
+                value={`${toSpeed(s.speedKmh, prefs.units)}`}
+                unit={speedLabel(prefs.units)}
+                tone={over ? colors.bad : undefined}
+              />
+              <StatTile
+                icon="alert-circle-outline"
+                label="Limit"
+                value={s.limitKmh != null ? `${toSpeed(s.limitKmh, prefs.units)}` : '--'}
+                unit={s.limitKmh != null ? speedLabel(prefs.units) : undefined}
+              />
+            </View>
+            <View style={styles.tiles}>
+              <StatTile icon="flag-outline" label="Arrive" value={fmtClock(s.etaEpoch)} />
+              <StatTile icon="map-outline" label="Remaining" value={fmtDistance(s.remainingM, prefs.units)} />
+            </View>
           </View>
         </>
       ) : (
         <EmptyState icon="locate-outline" title="Waiting for GPS…" subtitle="Hold still for a moment while the first fix lands." />
       )}
 
-      <Button label="End ride" icon="stop-circle-outline" variant="danger" onPress={stop} />
+      <Button label="End ride" icon="stop" variant="danger" onPress={stop} />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space.lg, gap: space.md },
-  statusRow: { flexDirection: 'row', gap: space.sm },
+  content: { paddingHorizontal: layout.gutter, gap: layout.section },
+  statusRow: { flexDirection: 'row', gap: space.lg },
   banner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: space.sm,
-    borderRadius: radius.md,
-    paddingVertical: space.md,
+    borderRadius: radius.sm,
+    paddingVertical: space.sm + 2,
+    paddingHorizontal: space.md,
   },
-  bannerText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
+  bannerText: { ...type.label, fontSize: 13, color: colors.accentInk },
   error: { color: colors.bad, fontSize: 14 },
 
-  hero: { padding: space.lg, gap: space.md },
-  heroTop: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
-  arrowBubble: {
-    width: 64,
-    height: 64,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surfaceHi,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroText: { flex: 1 },
-  heroDist: { ...type.hero, color: colors.text },
-  heroManeuver: { ...type.heading, color: colors.dim, marginTop: -2 },
-  street: { ...type.body, color: colors.text },
+  hero: { gap: layout.tight },
+  heroTop: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  heroDist: { ...type.hero, color: colors.text, flex: 1 },
+  heroManeuver: { ...type.title, color: colors.text },
+  street: { color: colors.dim, fontWeight: '400' },
   curve: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.xs + 2,
     borderRadius: radius.sm,
-    paddingHorizontal: space.md,
+    paddingHorizontal: space.sm + 2,
     paddingVertical: 5,
+    marginTop: space.xs,
   },
-  curveText: { color: '#000000', fontWeight: '800', fontSize: 12, letterSpacing: 0.4 },
-  tiles: { flexDirection: 'row', gap: space.sm },
-  note: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xs + 2 },
-  noteText: { color: colors.warn, fontSize: 12, textAlign: 'center' },
+  curveText: { ...type.label, fontSize: 12, color: '#000000' },
+  readouts: { gap: layout.group },
+  tiles: { flexDirection: 'row', gap: space.lg },
+  noteText: { ...type.label, color: colors.warn, textAlign: 'center' },
 });

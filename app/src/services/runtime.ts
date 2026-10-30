@@ -6,11 +6,14 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 
 import { LatLon } from '../core/geo';
+import { RideRecord, RideRecorder } from '../core/history';
 import { Fix } from '../core/nav-engine';
+import { NavState } from '../core/proto';
 import { Route } from '../core/route';
 import { NavSession } from '../core/session';
 import { simulateRide } from '../core/simulator';
 import { DeviceLink } from './ble';
+import { history } from './history';
 import { startMediaRelay } from './media';
 import { fetchRoute } from './routing';
 import { fetchStreets, prefetchAlongRoute } from './streets';
@@ -20,8 +23,6 @@ const DEFAULT_SIM_SPEED_KMH = 50;
 const SIM_INTERVAL_MS = 500;
 
 let batteryPct: number | null = null;
-void Battery.getBatteryLevelAsync().then((l) => (batteryPct = l >= 0 ? Math.round(l * 100) : null));
-Battery.addBatteryLevelListener(({ batteryLevel }) => (batteryPct = Math.round(batteryLevel * 100)));
 
 export const link = new DeviceLink();
 export const session = new NavSession({
@@ -38,6 +39,18 @@ link.onConnected = () => {
 };
 link.onMediaCmd = (cmd) => mediaRelay?.onDeviceCommand(cmd);
 
+// expo-battery reports -1 when the level is unknown (e.g. the iOS simulator).
+const setBattery = (level: number) => {
+  const pct = level >= 0 ? Math.round(level * 100) : null;
+  if (pct === batteryPct) return;
+  batteryPct = pct;
+  session.onPhoneBatteryChanged(Date.now());
+};
+void Battery.getBatteryLevelAsync().then(setBattery);
+Battery.addBatteryLevelListener(({ batteryLevel }) => setBattery(batteryLevel));
+// Keeps an idle display's phone battery and clock current; a no-op while riding.
+setInterval(() => session.heartbeat(Date.now()), 5000);
+
 function toFix(l: Location.LocationObject): Fix {
   return {
     lat: l.coords.latitude,
@@ -50,11 +63,18 @@ function toFix(l: Location.LocationObject): Fix {
 
 TaskManager.defineTask<{ locations: Location.LocationObject[] }>(LOCATION_TASK, async ({ data, error }) => {
   if (error || !data || simTimer) return;
-  for (const l of data.locations) session.onFix(toFix(l));
+  for (const l of data.locations) onFix(toFix(l));
 });
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 let simTimer: ReturnType<typeof setInterval> | null = null;
+/** Every ride, real or simulated, is recorded from start to stopRide() and saved to history. */
+let recorder: RideRecorder | null = null;
+
+function onFix(f: Fix) {
+  session.onFix(f);
+  recorder?.onFix(f);
+}
 
 export async function ensureLocationPermission(background: boolean): Promise<boolean> {
   const fg = await Location.requestForegroundPermissionsAsync();
@@ -69,14 +89,11 @@ export async function currentPosition(): Promise<LatLon> {
   return { lat: l.coords.latitude, lon: l.coords.longitude };
 }
 
-/** Start real navigation: background GPS feeds the session until stopRide(). */
-export async function startRide(route: Route, destination: LatLon) {
-  if (!(await ensureLocationPermission(true))) throw new Error('Location permission ("Allow all the time") is required');
-  session.start(route, destination);
-  // Warm the tile cache ahead of the rider so a signal gap does not blank the map. Fire-and-forget.
-  void prefetchAlongRoute(route);
+// The background location session is what keeps the app alive with the screen locked (iOS `location`
+// background mode, Android foreground service), so it also runs during a simulation, fixes discarded.
+async function startLocationUpdates(accuracy: Location.Accuracy) {
   await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-    accuracy: Location.Accuracy.BestForNavigation,
+    accuracy,
     timeInterval: 1000,
     distanceInterval: 0,
     activityType: Location.ActivityType.AutomotiveNavigation,
@@ -88,33 +105,62 @@ export async function startRide(route: Route, destination: LatLon) {
       killServiceOnDestroy: true,
     },
   });
+}
+
+async function stopLocationUpdates() {
+  if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK).catch(() => false)) {
+    await Location.stopLocationUpdatesAsync(LOCATION_TASK);
+  }
+}
+
+/** Start real navigation: background GPS feeds the session until stopRide(). */
+export async function startRide(route: Route, destination: RideRecord['destination']) {
+  if (!(await ensureLocationPermission(true))) throw new Error('Location permission ("Allow all the time") is required');
+  session.start(route, destination.point);
+  recorder = new RideRecorder(Date.now(), false, destination, route.lengthM);
+  // Warm the tile cache ahead of the rider so a signal gap does not blank the map. Fire-and-forget.
+  void prefetchAlongRoute(route);
+  await startLocationUpdates(Location.Accuracy.BestForNavigation);
   tickTimer = setInterval(() => session.tick(Date.now()), 1000);
 }
 
 /** Ride the route virtually: same pipeline, fake GPS. Great for testing the device on the bench. */
-export function startSimulation(route: Route, destination: LatLon, speedKmh = DEFAULT_SIM_SPEED_KMH) {
-  session.start(route, destination);
+export async function startSimulation(
+  route: Route,
+  destination: RideRecord['destination'],
+  speedKmh = DEFAULT_SIM_SPEED_KMH,
+) {
+  session.start(route, destination.point);
+  recorder = new RideRecorder(Date.now(), true, destination, route.lengthM);
   void prefetchAlongRoute(route);
   const speedMps = speedKmh / 3.6;
   const fixes = simulateRide(route, { speedMps, intervalMs: SIM_INTERVAL_MS, startMs: Date.now() });
+  // simTimer is set before the keep-alive starts, so the location task never sees a gap to feed real fixes into.
   simTimer = setInterval(() => {
     const next = fixes.next();
     if (next.done) {
       if (simTimer) clearInterval(simTimer);
       simTimer = null;
+      // Otherwise real GPS would start feeding the finished session.
+      void stopLocationUpdates();
       return;
     }
-    session.onFix(next.value);
+    onFix(next.value);
   }, SIM_INTERVAL_MS);
+  // Best effort: without location permission the simulation still runs, just not with the screen locked.
+  if (await ensureLocationPermission(false)) {
+    await startLocationUpdates(Location.Accuracy.Lowest).catch(() => {});
+  }
 }
 
 export async function stopRide() {
   if (simTimer) clearInterval(simTimer);
   if (tickTimer) clearInterval(tickTimer);
   simTimer = tickTimer = null;
-  if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK).catch(() => false)) {
-    await Location.stopLocationUpdatesAsync(LOCATION_TASK);
-  }
+  await stopLocationUpdates();
+  const record = recorder?.finish(Date.now(), session.getView().state === NavState.ARRIVED);
+  recorder = null;
+  if (record) history.add(record);
   session.stop();
 }
 

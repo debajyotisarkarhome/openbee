@@ -87,5 +87,5 @@ export function RoadShape({
 const styles = StyleSheet.create({
   circle: { width: SIZE, height: SIZE, borderRadius: SIZE / 2, backgroundColor: '#000', overflow: 'hidden', alignSelf: 'center' },
   dot: { position: 'absolute', width: 14, height: 14, borderRadius: 7, backgroundColor: colors.accent, borderWidth: 2, borderColor: '#000' },
-  rider: { position: 'absolute', width: 14, height: 14, borderRadius: 7, backgroundColor: colors.accent },
+  rider: { position: 'absolute', width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFFFFF' },
 });

@@ -31,6 +31,27 @@ export async function geocode(q: string, near?: LatLon): Promise<Place[]> {
   }));
 }
 
+/** The nearest named place to `p`, or a plain "Dropped pin" when the geocoder has nothing useful. */
+export async function reverseGeocode(p: LatLon): Promise<Place> {
+  const pin: Place = { name: 'Dropped pin', detail: `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`, point: p };
+  if (!GRAPHHOPPER_KEY) return pin;
+  const params = new URLSearchParams({ reverse: 'true', point: `${p.lat},${p.lon}`, limit: '1', locale: 'en', key: GRAPHHOPPER_KEY });
+  const res = await fetch(`${BASE}/geocode?${params}`);
+  if (!res.ok) return pin;
+  const body = (await res.json()) as {
+    hits: { name?: string; street?: string; housenumber?: string; city?: string; state?: string; country?: string }[];
+  };
+  const h = body.hits[0];
+  if (!h) return pin;
+  const street = [h.street, h.housenumber].filter(Boolean).join(' ');
+  return {
+    // The route goes to where the pin is, not to the place the geocoder matched.
+    name: h.name || street || pin.name,
+    detail: [h.name ? street : null, h.city, h.state, h.country].filter(Boolean).join(', ') || pin.detail,
+    point: p,
+  };
+}
+
 export async function fetchRoute(from: LatLon, to: LatLon): Promise<Route> {
   requireKey();
   const res = await fetch(`${BASE}/route?key=${encodeURIComponent(GRAPHHOPPER_KEY)}`, {

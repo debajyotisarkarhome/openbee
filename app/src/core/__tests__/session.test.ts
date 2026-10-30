@@ -1,7 +1,7 @@
 import { fromBase64, toBase64 } from '../base64';
 import { Maneuver, MsgType, NavState, NotifKind, decode } from '../proto';
 import { makeRoute } from '../route';
-import { NavSession } from '../session';
+import { IDLE_TRIP_INTERVAL_MS, NavSession } from '../session';
 import { PathBuilder, simulateRide } from '../simulator';
 
 const START = { lat: 22.5726, lon: 88.3639 };
@@ -115,5 +115,35 @@ describe('NavSession', () => {
     expect(types()).toEqual([MsgType.STATE, MsgType.NAV, MsgType.TRIP]);
     s.notify({ kind: NotifKind.CALL, app: 'Phone', title: 'X', body: '' });
     expect(types()[3]).toBe(MsgType.NOTIF);
+  });
+
+  it('keeps an idle display supplied with phone battery and clock', () => {
+    const { s, frames, types } = setup();
+    s.onDeviceConnected();
+    expect(types()).toEqual([MsgType.STATE, MsgType.TRIP]);
+    const idle = decode(frames[1]);
+    expect(idle.type === MsgType.TRIP && idle.msg).toMatchObject({ etaEpoch: 0, remainingM: 0, phoneBatt: 55, tzOffsetMin: 330 });
+
+    frames.length = 0;
+    const t0 = Date.now() + IDLE_TRIP_INTERVAL_MS; // onDeviceConnected stamped the wall clock
+    s.heartbeat(t0);
+    s.heartbeat(t0 + IDLE_TRIP_INTERVAL_MS - 1); // too soon
+    s.onPhoneBatteryChanged(t0 + 1000); // immediate regardless of the interval
+    s.heartbeat(t0 + 1000 + IDLE_TRIP_INTERVAL_MS);
+    expect(types()).toEqual([MsgType.TRIP, MsgType.TRIP, MsgType.TRIP]);
+  });
+
+  it('leaves TRIP to the fix stream during a ride, and clears the route when it stops', () => {
+    const { s, frames, types } = setup();
+    s.start(route(), { lat: 0, lon: 0 });
+    frames.length = 0;
+    s.heartbeat(10 * IDLE_TRIP_INTERVAL_MS);
+    s.onPhoneBatteryChanged(10 * IDLE_TRIP_INTERVAL_MS);
+    expect(frames).toHaveLength(0);
+
+    s.stop();
+    expect(types()).toEqual([MsgType.STATE, MsgType.TRIP]);
+    const cleared = decode(frames[1]);
+    expect(cleared.type === MsgType.TRIP && cleared.msg.etaEpoch).toBe(0);
   });
 });

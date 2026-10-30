@@ -2,10 +2,9 @@ import { useEffect } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { link } from '../../services/runtime';
-import { Badge, Button, Card, Divider, EmptyState, Row, SectionLabel, StatTile } from '../../ui/components';
-import { BOTTOM_BAR_CLEARANCE } from '../../ui/BottomBar';
+import { Badge, Button, Card, Divider, EmptyState, Row, ScreenTitle, SectionLabel, StatTile } from '../../ui/components';
 import { useLink } from '../../ui/hooks';
-import { colors, space } from '../../ui/theme';
+import { colors, layout, space, type } from '../../ui/theme';
 
 /** RSSI is roughly -40 (touching) to -100 (far). Map it to four bars for a readable hint. */
 function signalLabel(rssi: number | null): string {
@@ -36,34 +35,25 @@ export default function DeviceScreen() {
     const d = v.devStatus;
     return (
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        <Card>
-          <Row
-            icon="bluetooth"
-            tone={colors.ok}
-            title={v.deviceName ?? 'OpenBee display'}
-            subtitle="Connected"
-            right={<Badge label="LIVE" tone={colors.ok} />}
-          />
-        </Card>
+        <View style={styles.titleGroup}>
+          <ScreenTitle kicker="display">{v.deviceName ?? 'OpenBee'}</ScreenTitle>
+          <Badge label="Connected" tone={colors.ok} ink={colors.ok} />
+        </View>
 
         {d ? (
-          <View>
-            <SectionLabel>Device</SectionLabel>
+          <View style={styles.group}>
             <View style={styles.tiles}>
               <StatTile
+                icon="battery-half-outline"
                 label="Battery"
                 value={`${d.battPct}`}
                 unit="%"
                 tone={d.battPct < 20 ? colors.bad : undefined}
               />
-              <StatTile label="Voltage" value={(d.battMv / 1000).toFixed(2)} unit="V" />
-              <StatTile label="Firmware" value={`v${d.fwVer}`} />
+              <StatTile icon="flash-outline" label="Voltage" value={(d.battMv / 1000).toFixed(2)} unit="V" />
+              <StatTile icon="hardware-chip-outline" label="Firmware" value={`${d.fwVer}`} />
             </View>
-            {d.charging ? (
-              <View style={styles.chargeRow}>
-                <Badge label="CHARGING" tone={colors.ok} ink={colors.ok} />
-              </View>
-            ) : null}
+            {d.charging ? <Badge label="Charging" tone={colors.charge} ink={colors.charge} /> : null}
           </View>
         ) : (
           <Text style={styles.hint}>Waiting for the first status frame…</Text>
@@ -76,20 +66,23 @@ export default function DeviceScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.hint}>{STATUS_HINT[v.status] ?? STATUS_HINT.idle}</Text>
+      <View style={styles.titleGroup}>
+        <ScreenTitle kicker="display">Pair a display</ScreenTitle>
+        <Text style={styles.hint}>{STATUS_HINT[v.status] ?? STATUS_HINT.idle}</Text>
+      </View>
 
       {v.found.length > 0 ? (
         <View>
-          <SectionLabel>Found</SectionLabel>
+          <SectionLabel icon="radio-outline">{`${v.found.length} found`}</SectionLabel>
           <Card>
             {v.found.map((d, i) => (
               <View key={d.id}>
                 {i > 0 ? <Divider /> : null}
                 <Row
-                  icon="hardware-chip-outline"
+                  icon="bluetooth-outline"
                   title={d.name}
                   subtitle={signalLabel(d.rssi)}
-                  right={<Badge label={d.rssi != null ? `${d.rssi} dBm` : '–'} />}
+                  right={<Text style={styles.rssi}>{d.rssi != null ? `${d.rssi} dBm` : '--'}</Text>}
                   onPress={() => link.connect(d.id)}
                 />
               </View>
@@ -97,9 +90,9 @@ export default function DeviceScreen() {
           </Card>
         </View>
       ) : v.status === 'scanning' ? (
-        <EmptyState icon="bluetooth-outline" title="Scanning…" subtitle="Make sure the display is powered on and nearby." />
+        <Badge label="Scanning" tone={colors.accent} />
       ) : (
-        <EmptyState icon="hardware-chip-outline" title="No displays yet" subtitle="Power on the display, then scan." />
+        <EmptyState icon="bluetooth-outline" title="No displays yet" subtitle="Power on the display, then scan." />
       )}
 
       <Button
@@ -115,8 +108,10 @@ export default function DeviceScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space.lg, gap: space.lg, paddingBottom: space.lg + BOTTOM_BAR_CLEARANCE },
-  tiles: { flexDirection: 'row', gap: space.sm },
-  chargeRow: { marginTop: space.md },
-  hint: { color: colors.dim, fontSize: 14, lineHeight: 20 },
+  content: { paddingHorizontal: layout.gutter, paddingBottom: layout.bottom, gap: layout.section },
+  titleGroup: { gap: layout.tight },
+  group: { gap: layout.group },
+  tiles: { flexDirection: 'row', gap: space.lg },
+  hint: { color: colors.dim, fontSize: 15, lineHeight: 21 },
+  rssi: { ...type.label, fontSize: 12, color: colors.faint },
 });

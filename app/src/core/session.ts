@@ -26,6 +26,8 @@ export const STREET_RADIUS_M = 700;
 
 export const NAV_INTERVAL_MS = 500;
 export const TRIP_INTERVAL_MS = 1000;
+/** With no ride, a TRIP still goes out this often to keep the display's phone battery and clock fresh. */
+export const IDLE_TRIP_INTERVAL_MS = 30_000;
 
 export interface SessionView {
   state: NavState;
@@ -48,6 +50,7 @@ export class NavSession {
   private lastFix: Fix | null = null;
   private lastNavAt = -Infinity;
   private lastTripAt = -Infinity;
+  private lastIdleTripAt = -Infinity;
   private lastManeuverKey = '';
   private rerouting = false;
   private error: string | null = null;
@@ -140,6 +143,8 @@ export class NavSession {
     this.streets = [];
     this.roadsError = null;
     this.setState(NavState.IDLE);
+    // Clears the ride's ETA and distance on the display; battery and clock carry on.
+    this.sendIdleTrip(Date.now());
   }
 
   get active() {
@@ -153,7 +158,40 @@ export class NavSession {
     if (this.snapshot) {
       this.deps.send(encodeNav(this.snapshot.nav));
       this.deps.send(encodeTrip(this.tripMsg(this.snapshot, this.lastFix!.timeMs)));
+    } else {
+      this.sendIdleTrip(Date.now());
     }
+  }
+
+  /**
+   * Call periodically whether or not a ride is running. While idle it sends a TRIP every
+   * IDLE_TRIP_INTERVAL_MS — the only frame that carries the phone battery and the clock. During a ride
+   * onFix() already sends TRIP at 1 Hz, so this does nothing.
+   */
+  heartbeat(nowMs: number) {
+    if (this.engine || nowMs - this.lastIdleTripAt < IDLE_TRIP_INTERVAL_MS) return;
+    this.sendIdleTrip(nowMs);
+  }
+
+  /** The phone battery changed: tell an idle display now rather than at the next heartbeat. */
+  onPhoneBatteryChanged(nowMs: number) {
+    if (!this.engine) this.sendIdleTrip(nowMs);
+  }
+
+  /** TRIP with no route: eta_epoch 0 is how the device knows there is no destination. */
+  private sendIdleTrip(nowMs: number) {
+    this.lastIdleTripAt = nowMs;
+    this.deps.send(
+      encodeTrip({
+        speedKmh: 0,
+        limitKmh: 0,
+        etaEpoch: 0,
+        remainingM: 0,
+        phoneBatt: this.deps.phoneBatteryPct(),
+        nowEpoch: Math.round(nowMs / 1000),
+        tzOffsetMin: this.deps.tzOffsetMin(),
+      }),
+    );
   }
 
   notify(n: NotifMsg) {
