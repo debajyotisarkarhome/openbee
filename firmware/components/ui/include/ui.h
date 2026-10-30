@@ -1,4 +1,4 @@
-// LVGL UI: swipeable Nav / Media / Status / Settings views + state banner + notification overlay.
+// LVGL UI: swipeable Nav / Engine / Media / Status / Settings views + state banner + notification overlay.
 // All functions take the LVGL port lock internally; call them from any task.
 #pragma once
 
@@ -33,6 +33,23 @@ void ui_apply(const proto_msg_t *msg);
  */
 void ui_lock(void);
 void ui_unlock(void);
+
+/** Engine page link state. */
+enum { UI_ENGINE_SEARCHING, UI_ENGINE_NO_ECU, UI_ENGINE_LIVE };
+#define UI_ENGINE_UNKNOWN INT16_MIN
+
+/** Engine page data (OBD-II via the ELM327 adapter). Unknown values are UI_ENGINE_UNKNOWN; batt_mv 0 = unknown. */
+typedef struct {
+    uint8_t link; // UI_ENGINE_*
+    int32_t rpm;
+    int16_t speed_kmh;
+    int16_t coolant_c;
+    int16_t throttle_pct;
+    int16_t load_pct;
+    uint16_t batt_mv;
+} ui_engine_t;
+
+void ui_set_engine(const ui_engine_t *e);
 
 void ui_set_connected(bool connected);
 void ui_set_device_battery(uint8_t pct, uint16_t mv);

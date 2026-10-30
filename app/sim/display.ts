@@ -19,7 +19,31 @@ const CHIP_Y = 46, CHIP_DEV_X = 50, CHIP_PHONE_X = 118, CHIP_ICON = 16, CHIP_BAR
 const CLOCK_DY = -6, TRIP_ICON_Y = 148, TRIP_ICON = 18, TRIP_VAL_Y = 171, TRIP_COL_DX = 37, TRIP_DIV_Y = 150, TRIP_DIV_H = 42;
 const battColor = (pct: number) => (pct <= BATT_LOW_PCT ? '#FF2D2D' : pct <= BATT_MID_PCT ? '#FF8A00' : '#22C55E');
 const VIEW_MAX_M = 300;
+/** Engine view geometry (mirrors ENG_* in ui.c). */
+const ENG_ARC_W = 6, ENG_RPM_STEPS = [8000, 12000, 16000], ENG_REDLINE_PCT = 85;
+const ENG_STATUS_Y = 40, ENG_SPEED_Y = 58, ENG_RPM_Y = 96, ENG_COL_DX = 42, ENG_COL_Y = 152, ENG_COL_ICON = 16;
+const ENG_BAR_LBL_Y = 184, ENG_BAR_Y = 204, ENG_BAR_W = 54, ENG_BAR_DX = 32;
+const C_RED = '#FF2D2D', C_ORANGE = '#FF8A00', C_GREEN = '#22C55E';
 const FONT = (px: number) => `500 ${px}px Montserrat, "Helvetica Neue", Arial, sans-serif`;
+
+/** What the device's Engine page shows (ui_engine_t in ui.h); null = unknown. */
+export interface EngineState {
+  link: 'searching' | 'noEcu' | 'live';
+  rpm: number | null;
+  speedKmh: number | null;
+  coolantC: number | null;
+  throttlePct: number | null;
+  loadPct: number | null;
+  battMv: number | null;
+}
+
+/** The simulator has no OBD adapter: like demo_engine() in main.c, derive plausible numbers from ride speed. */
+export function simEngine(speedKmh: number, t: number): EngineState {
+  return {
+    link: 'live', rpm: 1200 + speedKmh * 95 + (t % 7) * 40, speedKmh, coolantC: 88,
+    throttlePct: 12 + ((t * 7) % 30), loadPct: 25 + Math.floor(speedKmh / 4), battMv: 13900,
+  };
+}
 
 export interface DeviceState {
   connected: boolean;
@@ -31,17 +55,19 @@ export interface DeviceState {
   deviceBattPct: number;
   brightnessPct: number;
   media: MediaMsg;
+  engine: EngineState;
 }
 
 export function newDeviceState(): DeviceState {
   return {
     connected: true, navState: NavState.IDLE, nav: null, trip: null, notif: null, notifAt: 0, deviceBattPct: 87,
     brightnessPct: 80, media: { state: MediaState.NONE, volumePct: null, title: '', artist: '' },
+    engine: { link: 'searching', rpm: null, speedKmh: null, coolantC: null, throttlePct: null, loadPct: null, battMv: null },
   };
 }
 
-/** Tile order, as in ui_init(): Nav, Media, Status, Settings. */
-export const TILE_NAV = 0, TILE_MEDIA = 1, TILE_STATUS = 2, TILE_SETTINGS = 3;
+/** Tile order, as in ui_init(): Nav, Engine, Media, Status, Settings. */
+export const TILE_NAV = 0, TILE_ENGINE = 1, TILE_MEDIA = 2, TILE_STATUS = 3, TILE_SETTINGS = 4;
 
 /** −/+ pill (mirrors PILL_* in ui.c): dark rounded bar, 40 px buttons at the ends, level bar between them. */
 const PILL_X = 52, PILL_W = 136, PILL_H = 40, PILL_BAR_W = 52, PILL_BTN_EXT = 6;
@@ -50,7 +76,7 @@ const PILL_X = 52, PILL_W = 136, PILL_H = 40, PILL_BAR_W = 52, PILL_BTN_EXT = 6;
 const MEDIA_TITLE_Y = 44, MEDIA_TITLE_W = 130, MEDIA_ARTIST_Y = 68;
 const MEDIA_ARTIST_W = 120, MEDIA_ROW_Y = 122, MEDIA_PILL_Y = 170;
 const MEDIA_PRESSED_BG = '#0E2A36';
-const LINE_H_20 = 22, LINE_H_14 = 16; // lv_font_get_line_height of Montserrat 20 / 14
+const LINE_H_40 = 43, LINE_H_28 = 30, LINE_H_20 = 22, LINE_H_14 = 16; // lv_font_get_line_height of Montserrat 40/28/20/14
 const MEDIA_BUTTONS: { cx: number; cy: number; d: number; cmd: MediaCmd; primary?: boolean; pill?: boolean }[] = [
   { cx: 56, cy: MEDIA_ROW_Y, d: 48, cmd: MediaCmd.PREV },
   { cx: 120, cy: MEDIA_ROW_Y, d: 68, cmd: MediaCmd.TOGGLE, primary: true },
@@ -80,6 +106,10 @@ export class DisplayRenderer {
   tile = 0;
   /** Media button under the finger, drawn in its pressed style (LV_STATE_PRESSED). */
   mediaPressed: MediaCmd | null = null;
+  /** RPM gauge full scale; grows like s.eng_rpm_max in ui.c, never shrinks. */
+  private rpmMax = ENG_RPM_STEPS[0];
+  /** Where the RPM arc is drawn now: it glides toward each reading like ENG_SWEEP_MS in ui.c. */
+  private arcRpm = 0;
 
   // Street sets assembled from ROADS frames, like road_set_t in ui.c.
   private shown: { anchorId: number; roads: RoadPoint[][] } = { anchorId: 0, roads: [] };
@@ -132,6 +162,7 @@ export class DisplayRenderer {
       c.save();
       c.translate(x, 0);
       if (t === TILE_NAV) this.drawNav(st, nowMs);
+      else if (t === TILE_ENGINE) this.drawEngine(st.engine);
       else if (t === TILE_MEDIA) this.drawMedia(st);
       else if (t === TILE_STATUS) this.drawStatus(st, deviceClockS, tzMin);
       else this.drawSettings(st);
@@ -530,7 +561,7 @@ export class DisplayRenderer {
 
   // ---------- Status tile ----------
   /** Port of icon_draw_cb() in ui.c: line-art icons on a 24-unit grid. */
-  private icon(kind: 'device' | 'phone' | 'flag' | 'route' | 'bt' | 'sun', x: number, y: number, size: number, color: string) {
+  private icon(kind: 'device' | 'phone' | 'flag' | 'route' | 'bt' | 'sun' | 'thermo' | 'battery', x: number, y: number, size: number, color: string) {
     const c = this.ctx;
     c.save();
     c.translate(x, y);
@@ -581,6 +612,31 @@ export class DisplayRenderer {
         c.lineTo(12 + 10 * ux, 12 + 10 * uy);
       }
       c.stroke();
+    } else if (kind === 'thermo') {
+      c.roundRect(9.5, 2, 5, 14, 2.5);
+      c.moveTo(12, 9);
+      c.lineTo(12, 17);
+      c.moveTo(16.5, 6);
+      c.lineTo(19, 6);
+      c.moveTo(16.5, 10);
+      c.lineTo(19, 10);
+      c.stroke();
+      c.beginPath();
+      c.arc(12, 18.5, 4, 0, Math.PI * 2);
+      c.fill();
+    } else if (kind === 'battery') {
+      c.roundRect(3, 7, 18, 13, 2);
+      c.moveTo(7, 4);
+      c.lineTo(7, 7);
+      c.moveTo(17, 4);
+      c.lineTo(17, 7);
+      c.moveTo(5.5, 13.5);
+      c.lineTo(10.5, 13.5);
+      c.moveTo(8, 11);
+      c.lineTo(8, 16);
+      c.moveTo(13.5, 13.5);
+      c.lineTo(18.5, 13.5);
+      c.stroke();
     } else { // LV_SYMBOL_BLUETOOTH
       c.lineWidth = 2;
       c.moveTo(7, 7);
@@ -629,6 +685,78 @@ export class DisplayRenderer {
     const x0 = right - (wn + wu) / 2;
     this.text(num, x0, valY, 20, route ? C_TEXT : C_OFF, 'left');
     if (unit) this.text(unit, x0 + wn + 4, valY + 1, 14, C_DIM, 'left');
+  }
+
+  /** Port of build_engine()/apply_engine() in ui.c: RPM gauge, speed over RPM, coolant | battery, throttle/load bars. */
+  private drawEngine(e: EngineState) {
+    const c = this.ctx;
+    const deg = Math.PI / 180;
+    const live = e.link === 'live';
+    const rpm = live ? e.rpm : null;
+    if (rpm != null) {
+      const next = ENG_RPM_STEPS.find((s) => s > this.rpmMax && rpm * 10 > this.rpmMax * 9);
+      if (next) this.rpmMax = next;
+    }
+    const target = rpm != null ? Math.min(rpm, this.rpmMax) : 0;
+    this.arcRpm += (target - this.arcRpm) * 0.25; // per frame: settles in ~150 ms at 60 fps
+    const shown = this.arcRpm;
+    const red = target * 100 > this.rpmMax * ENG_REDLINE_PCT;
+
+    const r = W / 2 - ARC_INSET - ENG_ARC_W / 2;
+    const span = 360 - BRIGHT_ARC_START + BRIGHT_ARC_END;
+    c.lineWidth = ENG_ARC_W;
+    c.lineCap = 'round';
+    c.beginPath();
+    c.arc(CX, CX, r, BRIGHT_ARC_START * deg, (360 + BRIGHT_ARC_END) * deg);
+    c.strokeStyle = C_PH_RING;
+    c.stroke();
+    if (shown > 1) {
+      c.beginPath();
+      c.arc(CX, CX, r, BRIGHT_ARC_START * deg, (BRIGHT_ARC_START + (span * shown) / this.rpmMax) * deg);
+      c.strokeStyle = red ? C_RED : C_ACCENT;
+      c.stroke();
+    }
+
+    const status = { searching: 'SEARCHING OBD...', noEcu: 'IGNITION OFF', live: 'OBD' }[e.link];
+    this.text(status, CX, ENG_STATUS_Y + LINE_H_14 / 2, 14, live ? C_ACCENT : C_DIM);
+
+    // Value + unit rows, centred together with bottoms aligned (value_row() in ui.c).
+    const row = (y: number, px: number, lh: number, value: string, color: string, unit: string, padBottom: number) => {
+      c.font = FONT(px);
+      const wv = c.measureText(value).width;
+      c.font = FONT(14);
+      const wu = c.measureText(unit).width;
+      const x0 = CX - (wv + 5 + wu) / 2;
+      this.text(value, x0, y + lh / 2, px, color, 'left');
+      this.text(unit, x0 + wv + 5, y + lh - padBottom - LINE_H_14 / 2, 14, C_DIM, 'left');
+    };
+    const speed = live ? e.speedKmh : null;
+    row(ENG_SPEED_Y, 28, LINE_H_28, speed != null ? `${speed}` : '--', speed != null ? C_TEXT : C_OFF, 'km/h', 3);
+    row(ENG_RPM_Y, 40, LINE_H_40, rpm != null ? `${rpm}` : '--', rpm == null ? C_OFF : red ? C_RED : C_TEXT, 'rpm', 6);
+
+    // Coolant | battery: icon and value side by side, centred on each column.
+    const col = (dx: number, kind: 'thermo' | 'battery', value: string, color: string) => {
+      c.font = FONT(20);
+      const w = ENG_COL_ICON + 4 + c.measureText(value).width;
+      const x0 = CX + dx - w / 2, cy = ENG_COL_Y + LINE_H_20 / 2;
+      this.icon(kind, x0, cy - ENG_COL_ICON / 2, ENG_COL_ICON, color);
+      this.text(value, x0 + ENG_COL_ICON + 4, cy, 20, color, 'left');
+    };
+    const cool = live ? e.coolantC : null;
+    const coolColor = cool == null ? C_OFF : cool < 60 ? C_ACCENT : cool < 105 ? C_TEXT : cool < 115 ? C_ORANGE : C_RED;
+    col(-ENG_COL_DX, 'thermo', cool != null ? `${cool}°` : '--', coolColor);
+    const mv = e.battMv;
+    const battColor = mv == null ? C_OFF : mv < 11800 ? C_RED : mv < 12200 ? C_ORANGE : mv >= 13200 ? C_GREEN : C_TEXT;
+    col(ENG_COL_DX, 'battery', mv != null ? `${Math.floor(mv / 1000)}.${Math.floor((mv % 1000) / 100)}V` : '--', battColor);
+
+    const bar = (dx: number, name: string, pct: number | null) => {
+      this.text(name, CX + dx, ENG_BAR_LBL_Y + LINE_H_14 / 2, 14, C_DIM);
+      const x = CX + dx - ENG_BAR_W / 2;
+      this.roundRect(x, ENG_BAR_Y, ENG_BAR_W, 4, 2, C_PH_RING);
+      if (pct) this.roundRect(x, ENG_BAR_Y, (ENG_BAR_W * pct) / 100, 4, 2, C_ACCENT);
+    };
+    bar(-ENG_BAR_DX, 'THR', live ? e.throttlePct : null);
+    bar(ENG_BAR_DX, 'LOAD', live ? e.loadPct : null);
   }
 
   /** Port of build_settings() in ui.c: thin brightness dial open at the bottom, sun, big value, −/+ pill. */

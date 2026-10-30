@@ -10,6 +10,7 @@
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "obd.h"
 #include "proto.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
@@ -169,6 +170,7 @@ static void on_sync(void)
     ble_hs_id_infer_auto(0, &s_own_addr_type);
     advertise();
     ESP_LOGI(TAG, "advertising as %s", s_name);
+    obd_on_sync(); // the OBD client scans and connects as a central alongside this peripheral link
 }
 
 static void on_reset(int reason)

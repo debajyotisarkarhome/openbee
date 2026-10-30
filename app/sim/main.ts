@@ -9,6 +9,7 @@ import { curveClassAt } from '../src/core/shape';
 import {
   BRIGHT_BTN_CY, BRIGHT_BTN_DX, BRIGHT_BTN_R, DisplayRenderer, TILE_MEDIA, TILE_NAV, TILE_SETTINGS, brightnessStep, fmtDistance,
   newDeviceState,
+  simEngine,
 } from './display';
 import { DEMO_ROUTES } from './routes';
 
@@ -58,6 +59,7 @@ function onFrame(f: Uint8Array) {
       break;
     case MsgType.TRIP:
       dev.trip = m.msg;
+      dev.engine = simEngine(m.msg.speedKmh, Math.floor(Date.now() / 1000));
       break;
     case MsgType.ROADS:
       renderers.forEach((r) => r.onRoads(m.msg));

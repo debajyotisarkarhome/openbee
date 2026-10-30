@@ -1,4 +1,4 @@
-// OpenBee firmware entry: wires BLE frames → decoder → UI, battery reporting, and demo mode.
+// OpenBee firmware entry: wires BLE frames → decoder → UI, OBD engine data → UI, battery reporting, and demo mode.
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "nvs_flash.h"
+#include "obd.h"
 #include "proto.h"
 #include "sdkconfig.h"
 #include "ui.h"
@@ -42,6 +43,9 @@ static atomic_uint s_brightness_changed_tick; // 0 = saved
 static portMUX_TYPE s_ams_media_lock = portMUX_INITIALIZER_UNLOCKED;
 static media_msg_t s_ams_media; // guarded by s_ams_media_lock
 static atomic_bool s_ams_media_changed;
+static portMUX_TYPE s_obd_lock = portMUX_INITIALIZER_UNLOCKED;
+static obd_data_t s_obd; // guarded by s_obd_lock
+static atomic_bool s_obd_changed;
 
 static void on_rx(const uint8_t *data, size_t len)
 {
@@ -77,6 +81,47 @@ static void ams_media_cb(const media_msg_t *m)
     s_ams_media = *m;
     portEXIT_CRITICAL(&s_ams_media_lock);
     atomic_store(&s_ams_media_changed, true);
+}
+
+static void obd_cb(const obd_data_t *d)
+{
+    // OBD task: copy and flag; the main loop applies it to the UI.
+    portENTER_CRITICAL(&s_obd_lock);
+    s_obd = *d;
+    portEXIT_CRITICAL(&s_obd_lock);
+    atomic_store(&s_obd_changed, true);
+}
+
+static void apply_obd(void)
+{
+    portENTER_CRITICAL(&s_obd_lock);
+    obd_data_t d = s_obd;
+    portEXIT_CRITICAL(&s_obd_lock);
+    ui_engine_t e = {
+        .link = d.link == OBD_LIVE ? UI_ENGINE_LIVE : d.link == OBD_NO_ECU ? UI_ENGINE_NO_ECU : UI_ENGINE_SEARCHING,
+        .rpm = d.rpm,
+        .speed_kmh = d.speed_kmh,
+        .coolant_c = d.coolant_c,
+        .throttle_pct = d.throttle_pct,
+        .load_pct = d.load_pct,
+        .batt_mv = d.batt_mv,
+    };
+    ui_set_engine(&e);
+}
+
+/** Demo mode's Engine page: plausible numbers that follow the demo ride's speed. */
+static void demo_engine(uint8_t speed_kmh, uint32_t t)
+{
+    ui_engine_t e = {
+        .link = UI_ENGINE_LIVE,
+        .rpm = 1200 + speed_kmh * 95 + (int32_t)(t % 7) * 40,
+        .speed_kmh = speed_kmh,
+        .coolant_c = 88,
+        .throttle_pct = (int16_t)(12 + (t * 7) % 30),
+        .load_pct = (int16_t)(25 + speed_kmh / 4),
+        .batt_mv = 13900,
+    };
+    ui_set_engine(&e);
 }
 
 /** Send a media command from the device's buttons to whichever source is playing: the iPhone's AMS when
@@ -194,6 +239,7 @@ void app_main(void)
     snprintf(name, sizeof name, "OpenBee-%02X%02X", mac[4], mac[5]);
     ui_init(disp, name, on_demo_toggle, brightness, on_brightness, on_media_cmd);
     ams_init(ams_media_cb);
+    obd_init(obd_cb); // before ble_link_init: the host's sync callback starts the OBD scan
     ESP_ERROR_CHECK(ble_link_init(on_rx, on_conn));
 
 #ifdef CONFIG_OPENBEE_DEMO_MODE
@@ -251,10 +297,16 @@ void app_main(void)
             media_route((uint8_t)(media_cmd - 1));
         }
 
+        if (atomic_exchange(&s_obd_changed, false) && !demo) {
+            apply_obd();
+        }
+
         if (atomic_exchange(&s_demo_toggle_req, false)) {
             demo = !demo;
             if (demo) {
                 demo_start();
+            } else {
+                apply_obd(); // back to the real adapter's state
             }
             ui_set_demo(demo);
             ESP_LOGI(TAG, "demo mode %s", demo ? "on" : "off");
@@ -274,6 +326,7 @@ void app_main(void)
             ui_apply(&st);
             ui_apply(&nav);
             ui_apply(&trip);
+            demo_engine(trip.u.trip.speed_kmh, now_s());
         } else if (!demo) {
             last_tick = now;
         }

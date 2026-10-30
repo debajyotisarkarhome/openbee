@@ -69,6 +69,22 @@ enum { PH_UNSET = -1, PH_HIDDEN, PH_WAITING, PH_READY };
 #define BATT_ANIM_MS 700
 #define BATT_CHARGING_MV 4250 // ≥ this means USB is feeding the charger (same rule as main.c)
 
+// Engine tile: RPM gauge round the edge (open at the bottom), speed over RPM, coolant | battery, throttle and load bars.
+#define ENG_ARC_W 6
+#define ENG_RPM_STEPS {8000, 12000, 16000} // gauge full scale grows past 90 % of the current one, never shrinks
+#define ENG_REDLINE_PCT 85
+#define ENG_SWEEP_MS 150 // RPM arc glides to each new reading over about one poll interval, so it moves like a needle
+#define ENG_STATUS_Y 40
+#define ENG_SPEED_Y 58
+#define ENG_RPM_Y 96
+#define ENG_COL_DX 42 // coolant / battery column centres either side of CX
+#define ENG_COL_Y 152
+#define ENG_COL_ICON 16
+#define ENG_BAR_LBL_Y 184
+#define ENG_BAR_Y 204
+#define ENG_BAR_W 54
+#define ENG_BAR_DX 32 // bar centres either side of CX
+
 // Settings tile: brightness gauge around the edge (open at the bottom), −/+ buttons for gloved fingers.
 #define BRIGHT_ARC_W 4
 #define BRIGHT_ARC_START 135 // LVGL degrees: 0 = 3 o'clock, clockwise; 135 → 45 leaves the bottom quarter open
@@ -128,6 +144,13 @@ static struct {
     lv_obj_t *phone_icon, *phone_batt_lbl, *phone_bar, *link_lbl, *demo_lbl;
     lv_obj_t *clock_lbl;
     lv_obj_t *eta_icon, *eta_lbl, *remain_icon, *remain_lbl, *remain_unit;
+
+    // Engine
+    lv_obj_t *tile_engine;
+    lv_obj_t *eng_arc, *eng_status, *eng_speed, *eng_speed_unit, *eng_rpm, *eng_rpm_unit;
+    lv_obj_t *eng_cool_icon, *eng_cool, *eng_batt_icon, *eng_batt, *eng_thr_bar, *eng_load_bar;
+    int32_t eng_rpm_max;
+    int32_t eng_arc_rpm; // where the arc is drawn now (mid-sweep between readings)
 
     // Settings
     lv_obj_t *tile_settings;
@@ -711,7 +734,7 @@ static void build_nav(lv_obj_t *t)
 
 // ---------- status tile ----------
 
-enum { ICON_DEVICE, ICON_PHONE, ICON_FLAG, ICON_ROUTE, ICON_SUN };
+enum { ICON_DEVICE, ICON_PHONE, ICON_FLAG, ICON_ROUTE, ICON_SUN, ICON_THERMO, ICON_BATTERY };
 
 /** Point on the cubic Bézier a→d at t. */
 static float bez(float a, float b, float c, float d, float t)
@@ -778,6 +801,27 @@ static void icon_draw_cb(lv_event_t *e)
             float ux = cosf(i * (float)M_PI / 4), uy = sinf(i * (float)M_PI / 4);
             line((12 + 7.5f * ux) * k, (12 + 7.5f * uy) * k, (12 + 10 * ux) * k, (12 + 10 * uy) * k, w, c);
         }
+        break;
+    case ICON_THERMO: // tube over a bulb, with two tick marks
+        r.radius = LV_RADIUS_CIRCLE;
+        box = (lv_area_t){s_ox + (int32_t)(9.5f * k), s_oy + (int32_t)(2 * k), s_ox + (int32_t)(14.5f * k),
+                          s_oy + (int32_t)(16 * k)};
+        lv_draw_rect(s_layer, &r, &box);
+        disc(12 * k, 18.5f * k, (int32_t)(4 * k + 0.5f), c);
+        line(12 * k, 9 * k, 12 * k, 17 * k, w, c);
+        line(16.5f * k, 6 * k, 19 * k, 6 * k, w, c);
+        line(16.5f * k, 10 * k, 19 * k, 10 * k, w, c);
+        break;
+    case ICON_BATTERY: // 12 V block with two terminals, + and −
+        r.radius = (int32_t)(2 * k);
+        box = (lv_area_t){s_ox + (int32_t)(3 * k), s_oy + (int32_t)(7 * k), s_ox + (int32_t)(21 * k),
+                          s_oy + (int32_t)(20 * k)};
+        lv_draw_rect(s_layer, &r, &box);
+        line(7 * k, 4 * k, 7 * k, 7 * k, w, c);
+        line(17 * k, 4 * k, 17 * k, 7 * k, w, c);
+        line(5.5f * k, 13.5f * k, 10.5f * k, 13.5f * k, w, c);
+        line(8 * k, 11 * k, 8 * k, 16 * k, w, c);
+        line(13.5f * k, 13.5f * k, 18.5f * k, 13.5f * k, w, c);
         break;
     }
 }
@@ -901,6 +945,186 @@ static void build_status(lv_obj_t *t)
     lv_label_set_text(s.remain_lbl, "--");
     s.remain_unit = label(row, &lv_font_montserrat_14, C_DIM);
     lv_obj_set_style_pad_bottom(s.remain_unit, 2, 0); // sit on the 20 px number's baseline
+}
+
+// ---------- engine tile ----------
+
+/** Value label + smaller unit label, centred together as one row (shared baseline). */
+static lv_obj_t *value_row(lv_obj_t *t, int32_t y, const lv_font_t *font, lv_obj_t **value, lv_obj_t **unit,
+                           const char *unit_txt)
+{
+    lv_obj_t *row = lv_obj_create(t);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(row, 5, 0);
+    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, y);
+    lv_obj_set_clickable(row, false);
+    *value = label(row, font, C_TEXT);
+    lv_label_set_text(*value, "--");
+    *unit = label(row, &lv_font_montserrat_14, C_DIM);
+    lv_label_set_text(*unit, unit_txt);
+    lv_obj_set_style_pad_bottom(*unit, font == &lv_font_montserrat_40 ? 6 : 3, 0);
+    return row;
+}
+
+/** One coolant / battery column: icon and value side by side, centred on x = CX + dx. */
+static void engine_column(lv_obj_t *t, int32_t dx, int kind, lv_obj_t **ic, lv_obj_t **value)
+{
+    lv_obj_t *col = lv_obj_create(t);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(col, 4, 0);
+    lv_obj_align(col, LV_ALIGN_TOP_MID, dx, ENG_COL_Y);
+    lv_obj_set_clickable(col, false);
+    *ic = icon(col, kind, ENG_COL_ICON, C_OFF);
+    *value = label(col, &lv_font_montserrat_20, C_OFF);
+    lv_label_set_text(*value, "--");
+}
+
+static lv_obj_t *engine_bar(lv_obj_t *t, int32_t dx, const char *name)
+{
+    lv_obj_t *l = label(t, &lv_font_montserrat_14, C_DIM);
+    lv_label_set_text(l, name);
+    lv_obj_align(l, LV_ALIGN_TOP_MID, dx, ENG_BAR_LBL_Y);
+    lv_obj_t *b = level_bar(t, ENG_BAR_W, 0, C_ACCENT);
+    lv_obj_align(b, LV_ALIGN_TOP_MID, dx, ENG_BAR_Y);
+    lv_obj_set_style_anim_duration(b, 200, LV_PART_MAIN);
+    return b;
+}
+
+static void build_engine(lv_obj_t *t)
+{
+    style_tile(t);
+    lv_obj_add_event_cb(t, back_to_nav, LV_EVENT_CLICKED, NULL);
+
+    // Read-only gauge: no knob and not clickable, so the whole page still swipes.
+    s.eng_arc = lv_arc_create(t);
+    lv_obj_set_size(s.eng_arc, W, H);
+    lv_obj_center(s.eng_arc);
+    lv_arc_set_bg_angles(s.eng_arc, BRIGHT_ARC_START, BRIGHT_ARC_END);
+    s.eng_rpm_max = ((const int32_t[])ENG_RPM_STEPS)[0];
+    lv_arc_set_range(s.eng_arc, 0, s.eng_rpm_max);
+    lv_arc_set_value(s.eng_arc, 0);
+    lv_obj_set_style_pad_all(s.eng_arc, ARC_INSET, 0);
+    lv_obj_set_style_arc_width(s.eng_arc, ENG_ARC_W, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s.eng_arc, C_PH_RING, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(s.eng_arc, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s.eng_arc, ENG_ARC_W, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s.eng_arc, C_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s.eng_arc, true, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s.eng_arc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s.eng_arc, 0, LV_PART_KNOB);
+    lv_obj_set_clickable(s.eng_arc, false);
+
+    s.eng_status = label(t, &lv_font_montserrat_14, C_DIM);
+    lv_obj_align(s.eng_status, LV_ALIGN_TOP_MID, 0, ENG_STATUS_Y);
+
+    value_row(t, ENG_SPEED_Y, &lv_font_montserrat_28, &s.eng_speed, &s.eng_speed_unit, "km/h");
+    value_row(t, ENG_RPM_Y, &lv_font_montserrat_40, &s.eng_rpm, &s.eng_rpm_unit, "rpm");
+
+    engine_column(t, -ENG_COL_DX, ICON_THERMO, &s.eng_cool_icon, &s.eng_cool);
+    engine_column(t, ENG_COL_DX, ICON_BATTERY, &s.eng_batt_icon, &s.eng_batt);
+
+    s.eng_thr_bar = engine_bar(t, -ENG_BAR_DX, "THR");
+    s.eng_load_bar = engine_bar(t, ENG_BAR_DX, "LOAD");
+}
+
+static lv_color_t coolant_color(int16_t c)
+{
+    return c < 60 ? C_ACCENT : c < 105 ? C_TEXT : c < 115 ? lv_color_hex(0xFF8A00) : lv_color_hex(0xFF2D2D);
+}
+
+static lv_color_t battery_color(uint16_t mv)
+{
+    return mv < 11800   ? lv_color_hex(0xFF2D2D)
+           : mv < 12200 ? lv_color_hex(0xFF8A00)
+           : mv >= 13200 ? lv_color_hex(0x22C55E) // above resting voltage: the charging system is working
+                         : C_TEXT;
+}
+
+static void eng_arc_set(int32_t rpm)
+{
+    s.eng_arc_rpm = rpm;
+    lv_arc_set_value(s.eng_arc, rpm);
+    bool red = rpm * 100 > s.eng_rpm_max * ENG_REDLINE_PCT;
+    lv_obj_set_style_arc_color(s.eng_arc, red ? lv_color_hex(0xFF2D2D) : C_ACCENT, LV_PART_INDICATOR);
+}
+
+static void eng_sweep_cb(void *obj, int32_t v)
+{
+    eng_arc_set(v);
+}
+
+static void apply_engine(const ui_engine_t *e)
+{
+    static const char *const status[] = {"SEARCHING OBD...", "IGNITION OFF", "OBD"};
+    lv_label_set_text(s.eng_status, e->link <= UI_ENGINE_LIVE ? status[e->link] : "");
+    lv_obj_set_style_text_color(s.eng_status, e->link == UI_ENGINE_LIVE ? C_ACCENT : C_DIM, 0);
+
+    bool live = e->link == UI_ENGINE_LIVE;
+    bool rpm_known = live && e->rpm != UI_ENGINE_UNKNOWN;
+    if (rpm_known) {
+        static const int32_t steps[] = ENG_RPM_STEPS;
+        for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+            if (steps[i] > s.eng_rpm_max && e->rpm * 10 > s.eng_rpm_max * 9) {
+                s.eng_rpm_max = steps[i];
+                lv_arc_set_range(s.eng_arc, 0, s.eng_rpm_max);
+                break;
+            }
+        }
+        lv_label_set_text_fmt(s.eng_rpm, "%ld", (long)e->rpm);
+    } else {
+        lv_label_set_text(s.eng_rpm, "--");
+    }
+    int32_t rpm = rpm_known ? (e->rpm < s.eng_rpm_max ? e->rpm : s.eng_rpm_max) : 0;
+    // The number is the real reading; only the arc is interpolated between readings.
+    lv_anim_delete(&s.eng_arc_rpm, eng_sweep_cb);
+    if (rpm != s.eng_arc_rpm) {
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, &s.eng_arc_rpm);
+        lv_anim_set_exec_cb(&a, eng_sweep_cb);
+        lv_anim_set_values(&a, s.eng_arc_rpm, rpm);
+        lv_anim_set_duration(&a, ENG_SWEEP_MS);
+        lv_anim_start(&a);
+    }
+    bool red = rpm * 100 > s.eng_rpm_max * ENG_REDLINE_PCT;
+    lv_obj_set_style_text_color(s.eng_rpm, rpm_known ? (red ? lv_color_hex(0xFF2D2D) : C_TEXT) : C_OFF, 0);
+
+    bool speed_known = live && e->speed_kmh != UI_ENGINE_UNKNOWN;
+    if (speed_known) {
+        lv_label_set_text_fmt(s.eng_speed, "%d", e->speed_kmh);
+    } else {
+        lv_label_set_text(s.eng_speed, "--");
+    }
+    lv_obj_set_style_text_color(s.eng_speed, speed_known ? C_TEXT : C_OFF, 0);
+
+    bool cool_known = live && e->coolant_c != UI_ENGINE_UNKNOWN;
+    if (cool_known) {
+        lv_label_set_text_fmt(s.eng_cool, "%d\xC2\xB0", e->coolant_c); // "°" in UTF-8
+    } else {
+        lv_label_set_text(s.eng_cool, "--");
+    }
+    lv_color_t cc = cool_known ? coolant_color(e->coolant_c) : C_OFF;
+    lv_obj_set_style_text_color(s.eng_cool, cc, 0);
+    lv_obj_set_style_text_color(s.eng_cool_icon, cool_known ? cc : C_OFF, 0);
+
+    // The adapter reads the battery itself, so this shows with the ignition off too.
+    if (e->batt_mv) {
+        lv_label_set_text_fmt(s.eng_batt, "%u.%uV", e->batt_mv / 1000, (e->batt_mv % 1000) / 100);
+    } else {
+        lv_label_set_text(s.eng_batt, "--");
+    }
+    lv_color_t bc = e->batt_mv ? battery_color(e->batt_mv) : C_OFF;
+    lv_obj_set_style_text_color(s.eng_batt, bc, 0);
+    lv_obj_set_style_text_color(s.eng_batt_icon, e->batt_mv ? bc : C_OFF, 0);
+
+    lv_bar_set_value(s.eng_thr_bar, live && e->throttle_pct != UI_ENGINE_UNKNOWN ? e->throttle_pct : 0, LV_ANIM_ON);
+    lv_bar_set_value(s.eng_load_bar, live && e->load_pct != UI_ENGINE_UNKNOWN ? e->load_pct : 0, LV_ANIM_ON);
 }
 
 /** Show and apply a brightness; from_arc skips writing the arc back while the rider is dragging it. */
@@ -1230,7 +1454,7 @@ static void refresh_banner(void)
 // those; the live widgets are skipped (opa 0) until it settles. Costs one ~40 ms frame at the start, and the
 // map stands still for the swipe. Without PSRAM it just stays live.
 
-#define TILE_COUNT 4
+#define TILE_COUNT 5
 #define SNAP_BUFS 3 // the active tile and both neighbours
 static lv_obj_t *s_tiles[TILE_COUNT];
 static lv_obj_t *s_snap_img[TILE_COUNT]; // per tile, hidden unless a swipe is showing it
@@ -1310,7 +1534,7 @@ static void tv_scroll_begin(lv_event_t *e)
 
 static void init_swipe_snapshots(void)
 {
-    lv_obj_t *tiles[TILE_COUNT] = {s.tile_nav, s.tile_media, s.tile_status, s.tile_settings};
+    lv_obj_t *tiles[TILE_COUNT] = {s.tile_nav, s.tile_engine, s.tile_media, s.tile_status, s.tile_settings};
     uint32_t size = LV_DRAW_BUF_SIZE(W, H, LV_COLOR_FORMAT_RGB565);
     for (int b = 0; b < SNAP_BUFS; b++) {
         void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
@@ -1599,10 +1823,18 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     lv_obj_set_style_bg_color(s.tv, C_BG, 0);
     lv_obj_set_scrollbar_mode(s.tv, LV_SCROLLBAR_MODE_OFF);
     s.tile_nav = lv_tileview_add_tile(s.tv, 0, 0, LV_DIR_RIGHT);
-    s.tile_media = lv_tileview_add_tile(s.tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_status = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    s.tile_settings = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT);
+    s.tile_engine = lv_tileview_add_tile(s.tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_media = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_status = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s.tile_settings = lv_tileview_add_tile(s.tv, 4, 0, LV_DIR_LEFT);
     build_nav(s.tile_nav);
+    build_engine(s.tile_engine);
+    apply_engine(&(ui_engine_t){.link = UI_ENGINE_SEARCHING,
+                                .rpm = UI_ENGINE_UNKNOWN,
+                                .speed_kmh = UI_ENGINE_UNKNOWN,
+                                .coolant_c = UI_ENGINE_UNKNOWN,
+                                .throttle_pct = UI_ENGINE_UNKNOWN,
+                                .load_pct = UI_ENGINE_UNKNOWN});
     build_media(s.tile_media);
     apply_media(&(media_msg_t){.state = MEDIA_NONE, .volume_pct = PROTO_UNKNOWN_VOLUME});
     build_status(s.tile_status);
@@ -1666,6 +1898,13 @@ void ui_set_connected(bool connected)
     s.connected = connected;
     refresh_banner();
     refresh_status();
+    lvgl_port_unlock();
+}
+
+void ui_set_engine(const ui_engine_t *e)
+{
+    lvgl_port_lock(0);
+    apply_engine(e);
     lvgl_port_unlock();
 }
 

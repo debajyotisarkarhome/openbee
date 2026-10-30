@@ -131,11 +131,21 @@ under congestion — stale NAV frames are dropped instead.
 
 ### The display screen is rendered three times
 
-`firmware/components/ui/ui.c` is the source of truth (LVGL tileview: Nav / Media / Status / Settings, plus state
+`firmware/components/ui/ui.c` is the source of truth (LVGL tileview: Nav / Engine / Media / Status / Settings, plus state
 banner and notification overlay; all `ui_*` functions take the LVGL port lock internally so they're
 callable from any task). `app/sim/display.ts` is a hand-maintained canvas port — same coordinates,
 colors, auto-zoom, arrow geometry — and `app/src/ui/RoadShape.tsx` draws a simpler in-app version.
 A change to the on-screen layout or palette in `ui.c` should be mirrored into `display.ts`.
+
+### Engine data (OBD-II) is the one thing the device does on its own
+
+The one deliberate exception to "the phone does the work": `components/obd` makes the device a BLE
+**central** to a BLE ELM327 adapter (found by service `FFF0`/`FFE0` or an OBD-ish name, accepted only if
+`ATZ` answers "ELM327"), alongside its peripheral link to the phone (`BT_NIMBLE_MAX_CONNECTIONS=2`,
+`ROLE_OBSERVER=y`). Its own task polls mode 01 (RPM/speed/throttle fast, coolant/load slower, `ATRV`
+battery) and hands an `obd_data_t` to `main.c`, which maps it to `ui_engine_t` for the Engine page. Engine
+data never touches the phone protocol. `obd_parse.c` is pure C with a host test (`obd_parse_test.c`) built
+from a real adapter's replies. Classic-Bluetooth (SPP) ELM327s can't work: the ESP32-S3 has no BR/EDR.
 
 ### Firmware main loop
 

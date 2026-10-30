@@ -19,3 +19,10 @@ ${CC:-gcc} -std=c11 -Wall -Wextra -Werror -O1 -g \
     "$here/ams_parse_test.c" \
     -o "$out/ams_parse_test"
 "$out/ams_parse_test"
+
+${CC:-gcc} -std=c11 -Wall -Wextra -Werror -O1 -g \
+    -I "$root/firmware/components/obd/include" \
+    "$root/firmware/components/obd/obd_parse.c" \
+    "$here/obd_parse_test.c" \
+    -o "$out/obd_parse_test"
+"$out/obd_parse_test"
