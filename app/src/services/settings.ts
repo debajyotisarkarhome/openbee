@@ -2,6 +2,7 @@
 // screens can read it through useSyncExternalStore.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { DEFAULT_PAGES, PageSetting, normalizePages } from '../core/layout';
 import { Units } from '../ui/theme';
 
 const KEY = 'openbee.settings';
@@ -14,9 +15,17 @@ export interface Settings {
   showMap: boolean;
   /** Mirror the device's road view on the ride screen. */
   showRoadShape: boolean;
+  /** The display's pages: swipe order, and which are shown (sent to the device as LAYOUT). */
+  pages: PageSetting[];
 }
 
-export const DEFAULTS: Settings = { units: 'metric', simSpeedKmh: 50, showMap: true, showRoadShape: true };
+export const DEFAULTS: Settings = {
+  units: 'metric',
+  simSpeedKmh: 50,
+  showMap: true,
+  showRoadShape: true,
+  pages: DEFAULT_PAGES,
+};
 
 export const SIM_SPEED_CHOICES = [25, 50, 80];
 
@@ -40,7 +49,7 @@ class SettingsStore {
       const raw = await AsyncStorage.getItem(KEY);
       if (!raw) return;
       const saved = JSON.parse(raw) as Partial<Settings>;
-      this.value = { ...DEFAULTS, ...saved };
+      this.value = { ...DEFAULTS, ...saved, pages: normalizePages(saved.pages) };
       this.emit();
     } catch {
       // Keep defaults: preferences are not worth failing startup over.

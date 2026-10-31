@@ -21,6 +21,7 @@ extern "C" {
 #define PROTO_MEDIA_TITLE_MAX 96
 #define PROTO_MEDIA_ARTIST_MAX 64
 #define PROTO_UNKNOWN_VOLUME 0xFF
+#define PROTO_MAX_LAYOUT_PAGES 8
 
 typedef enum {
     MSG_NAV = 0x01,
@@ -29,6 +30,7 @@ typedef enum {
     MSG_STATE = 0x04,
     MSG_ROADS = 0x05,
     MSG_MEDIA = 0x06,
+    MSG_LAYOUT = 0x07,
     MSG_DEV_STATUS = 0x81,
     MSG_MEDIA_CMD = 0x82,
 } msg_type_t;
@@ -130,6 +132,15 @@ typedef struct {
     char artist[PROTO_MEDIA_ARTIST_MAX + 1];
 } media_msg_t;
 
+/** Display page ids (LAYOUT). */
+typedef enum { PAGE_NAV = 0, PAGE_ENGINE, PAGE_MEDIA, PAGE_STATUS, PAGE_SETTINGS, PAGE_COUNT } page_t;
+
+/** Enabled pages in swipe order, as sent: may hold unknown ids or repeats (the UI sanitises). */
+typedef struct {
+    uint8_t n;
+    uint8_t pages[PROTO_MAX_LAYOUT_PAGES];
+} layout_msg_t;
+
 typedef struct {
     uint8_t batt_pct;
     uint16_t batt_mv;
@@ -146,6 +157,7 @@ typedef struct {
         uint8_t state;
         roads_msg_t roads;
         media_msg_t media;
+        layout_msg_t layout;
         uint8_t media_cmd; // media_cmd_t
         dev_status_msg_t dev_status;
     } u;

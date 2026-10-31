@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "lvgl.h"
 
@@ -16,6 +17,9 @@ extern "C" {
 
 /** Initialise LCD, touch and LVGL (esp_lvgl_port task). Returns the LVGL display. */
 lv_display_t *board_display_init(void);
+
+/** The shared I2C bus (touch, IMU). Valid after board_display_init(). */
+i2c_master_bus_handle_t board_i2c_bus(void);
 
 /** Backlight 0–100 %. */
 void board_backlight_set(uint8_t percent);

@@ -8,12 +8,14 @@ import * as TaskManager from 'expo-task-manager';
 import { LatLon } from '../core/geo';
 import { RideRecord, RideRecorder } from '../core/history';
 import { Fix } from '../core/nav-engine';
-import { NavState } from '../core/proto';
+import { shownPages } from '../core/layout';
+import { NavState, encodeLayout } from '../core/proto';
 import { Route } from '../core/route';
 import { NavSession } from '../core/session';
 import { simulateRide } from '../core/simulator';
 import { DeviceLink } from './ble';
 import { history } from './history';
+import { settings } from './settings';
 import { startMediaRelay } from './media';
 import { fetchRoute } from './routing';
 import { fetchStreets, prefetchAlongRoute } from './streets';
@@ -33,9 +35,21 @@ export const session = new NavSession({
   tzOffsetMin: () => -new Date().getTimezoneOffset(),
 });
 const mediaRelay = startMediaRelay(link);
+// The display's page layout: sent on every connect, and whenever the rider changes it in Settings.
+let sentPages = '';
+function sendLayout(force: boolean) {
+  const pages = shownPages(settings.getView().pages);
+  const key = pages.join(',');
+  if (!force && key === sentPages) return;
+  sentPages = key;
+  link.send(encodeLayout({ pages }));
+}
+settings.subscribe(() => sendLayout(false));
+
 link.onConnected = () => {
   session.onDeviceConnected();
   mediaRelay?.onDeviceConnected();
+  sendLayout(true);
 };
 link.onMediaCmd = (cmd) => mediaRelay?.onDeviceCommand(cmd);
 

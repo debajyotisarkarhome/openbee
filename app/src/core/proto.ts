@@ -17,6 +17,7 @@ export enum MsgType {
   STATE = 0x04,
   ROADS = 0x05,
   MEDIA = 0x06,
+  LAYOUT = 0x07,
   DEV_STATUS = 0x81,
   MEDIA_CMD = 0x82,
 }
@@ -127,6 +128,15 @@ export interface MediaMsg {
   volumePct: number | null;
   title: string;
   artist: string;
+}
+
+/** Display pages, by protocol id (LAYOUT). */
+export enum Page { NAV = 0, ENGINE = 1, MEDIA = 2, STATUS = 3, SETTINGS = 4 }
+export const MAX_LAYOUT_PAGES = 8;
+
+export interface LayoutMsg {
+  /** Enabled pages in swipe order, left to right. */
+  pages: Page[];
 }
 
 export interface DevStatusMsg {
@@ -310,6 +320,11 @@ export function encodeMedia(m: MediaMsg): Uint8Array {
   return frame(MsgType.MEDIA, w.bytes());
 }
 
+export function encodeLayout(m: LayoutMsg): Uint8Array {
+  const pages = m.pages.slice(0, MAX_LAYOUT_PAGES);
+  return frame(MsgType.LAYOUT, Uint8Array.of(pages.length, ...pages));
+}
+
 export function encodeMediaCmd(cmd: MediaCmd): Uint8Array {
   return frame(MsgType.MEDIA_CMD, Uint8Array.of(cmd));
 }
@@ -330,6 +345,7 @@ export type Decoded =
   | { type: MsgType.STATE; msg: NavState }
   | { type: MsgType.ROADS; msg: RoadsMsg }
   | { type: MsgType.MEDIA; msg: MediaMsg }
+  | { type: MsgType.LAYOUT; msg: LayoutMsg }
   | { type: MsgType.DEV_STATUS; msg: DevStatusMsg }
   | { type: MsgType.MEDIA_CMD; msg: { cmd: MediaCmd } };
 
@@ -386,6 +402,13 @@ export function decode(f: Uint8Array): Decoded {
       const state = r.u8(), vol = r.u8(), title = r.str(), artist = r.str();
       return { type: MsgType.MEDIA, msg: { state, volumePct: vol === 0xff ? null : vol, title, artist } };
     }
+    case MsgType.LAYOUT: {
+      const n = r.u8();
+      if (n > MAX_LAYOUT_PAGES) throw new Error('too many pages');
+      const pages: Page[] = [];
+      for (let i = 0; i < n; i++) pages.push(r.u8());
+      return { type: MsgType.LAYOUT, msg: { pages } };
+    }
     case MsgType.MEDIA_CMD:
       return { type: MsgType.MEDIA_CMD, msg: { cmd: r.u8() } };
     case MsgType.DEV_STATUS: {
@@ -432,6 +455,9 @@ export function dump(f: Uint8Array): string {
     case MsgType.MEDIA:
       L.push('type=MEDIA', `state=${d.msg.state}`, `volume_pct=${d.msg.volumePct ?? 255}`,
         `title=${d.msg.title}`, `artist=${d.msg.artist}`);
+      break;
+    case MsgType.LAYOUT:
+      L.push('type=LAYOUT', `n=${d.msg.pages.length}`, `pages=${d.msg.pages.join(',')}`);
       break;
     case MsgType.MEDIA_CMD:
       L.push('type=MEDIA_CMD', `cmd=${d.msg.cmd}`);

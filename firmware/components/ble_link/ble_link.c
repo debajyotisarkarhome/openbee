@@ -6,6 +6,7 @@
 #include "ams.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
@@ -33,6 +34,38 @@ static bool s_tx_subscribed;
 static uint8_t s_own_addr_type;
 static char s_name[16];
 
+// HID over GATT: a consumer-control remote whose "Voice Command" button iOS maps to Siri (Apple's accessory
+// guidelines list Consumer 0xCF for it), if it's held: an 80 ms tap was ignored, 1.5 s opened Siri. Play/Pause
+// and AC Search are in the map from the experiment that found that; changing the map means re-pairing, so they
+// stay, unused. HOGP also wants the Device Information and Battery services.
+static const uint8_t HID_REPORT_MAP[] = {
+    0x05, 0x0C,       // Usage Page (Consumer)
+    0x09, 0x01,       // Usage (Consumer Control)
+    0xA1, 0x01,       // Collection (Application)
+    0x85, 0x01,       //   Report ID 1
+    0x15, 0x00,       //   Logical Minimum 0
+    0x25, 0x01,       //   Logical Maximum 1
+    0x75, 0x01,       //   Report Size 1
+    0x95, 0x03,       //   Report Count 3: one bit per usage below
+    0x09, 0xCF,       //   bit 0: Voice Command
+    0x09, 0xCD,       //   bit 1: Play/Pause
+    0x0A, 0x21, 0x02, //   bit 2: AC Search
+    0x81, 0x02,       //   Input (Data, Var, Abs)
+    0x75, 0x05,       //   Report Size 5
+    0x95, 0x01,       //   Report Count 1
+    0x81, 0x03,       //   Input (Const): pad to a byte
+    0xC0,             // End Collection
+};
+#define HID_REPORT_ID 1
+#define HID_BIT_VOICE 0x01
+#define HID_VOICE_HOLD_US 1500000
+
+enum { HID_INFO, HID_MAP, HID_REPORT, HID_REPORT_REF, HID_CTRL, DIS_PNP, DIS_MFR, BAS_LEVEL };
+static uint16_t s_hid_report_handle;
+static bool s_hid_subscribed;
+static uint16_t s_batt_handle;
+static uint8_t s_batt_pct = 100;
+
 static void advertise(void);
 
 void ble_store_config_init(void); // NimBLE's NVS bond store; it has no public header
@@ -56,6 +89,44 @@ static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt 
     return 0;
 }
 
+static int append(struct ble_gatt_access_ctxt *ctxt, const void *data, size_t len)
+{
+    return os_mbuf_append(ctxt->om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
+static int hid_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    switch ((int)(intptr_t)arg) {
+    case HID_INFO: {
+        static const uint8_t info[] = {0x11, 0x01, 0x00, 0x02}; // HID 1.11, no country, normally connectable
+        return append(ctxt, info, sizeof info);
+    }
+    case HID_MAP:
+        return append(ctxt, HID_REPORT_MAP, sizeof HID_REPORT_MAP);
+    case HID_REPORT: {
+        static const uint8_t released = 0;
+        return ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR ? append(ctxt, &released, 1) : 0;
+    }
+    case HID_REPORT_REF: {
+        static const uint8_t ref[] = {HID_REPORT_ID, 0x01}; // input report
+        return append(ctxt, ref, sizeof ref);
+    }
+    case HID_CTRL:
+        return 0; // suspend / exit suspend: nothing to do
+    case DIS_PNP: {
+        static const uint8_t pnp[] = {0x02, 0x3A, 0x30, 0x01, 0x00, 0x01, 0x00}; // USB VID 0x303A (Espressif), PID 1, v1
+        return append(ctxt, pnp, sizeof pnp);
+    }
+    case DIS_MFR:
+        return append(ctxt, "OpenBee", 7);
+    case BAS_LEVEL:
+        return append(ctxt, &s_batt_pct, 1);
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
+#define HID_ARG(x) ((void *)(intptr_t)(x))
+
 static const struct ble_gatt_svc_def s_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -73,6 +144,57 @@ static const struct ble_gatt_svc_def s_svcs[] = {
                     .val_handle = &s_tx_handle,
                     .flags = BLE_GATT_CHR_F_NOTIFY,
                 },
+                {0},
+            },
+    },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = BLE_UUID16_DECLARE(0x1812), // HID
+        .characteristics =
+            (struct ble_gatt_chr_def[]){
+                {.uuid = BLE_UUID16_DECLARE(0x2A4A), .access_cb = hid_access, .arg = HID_ARG(HID_INFO),
+                 .flags = BLE_GATT_CHR_F_READ},
+                {.uuid = BLE_UUID16_DECLARE(0x2A4B), .access_cb = hid_access, .arg = HID_ARG(HID_MAP),
+                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC},
+                {.uuid = BLE_UUID16_DECLARE(0x2A4C), .access_cb = hid_access, .arg = HID_ARG(HID_CTRL),
+                 .flags = BLE_GATT_CHR_F_WRITE_NO_RSP},
+                {
+                    .uuid = BLE_UUID16_DECLARE(0x2A4D), // Report (input)
+                    .access_cb = hid_access,
+                    .arg = HID_ARG(HID_REPORT),
+                    .val_handle = &s_hid_report_handle,
+                    .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_NOTIFY,
+                    .descriptors =
+                        (struct ble_gatt_dsc_def[]){
+                            {.uuid = BLE_UUID16_DECLARE(0x2908), // Report Reference
+                             .att_flags = BLE_ATT_F_READ | BLE_ATT_F_READ_ENC,
+                             .access_cb = hid_access,
+                             .arg = HID_ARG(HID_REPORT_REF)},
+                            {0},
+                        },
+                },
+                {0},
+            },
+    },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = BLE_UUID16_DECLARE(0x180A), // Device Information
+        .characteristics =
+            (struct ble_gatt_chr_def[]){
+                {.uuid = BLE_UUID16_DECLARE(0x2A50), .access_cb = hid_access, .arg = HID_ARG(DIS_PNP),
+                 .flags = BLE_GATT_CHR_F_READ},
+                {.uuid = BLE_UUID16_DECLARE(0x2A29), .access_cb = hid_access, .arg = HID_ARG(DIS_MFR),
+                 .flags = BLE_GATT_CHR_F_READ},
+                {0},
+            },
+    },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = BLE_UUID16_DECLARE(0x180F), // Battery
+        .characteristics =
+            (struct ble_gatt_chr_def[]){
+                {.uuid = BLE_UUID16_DECLARE(0x2A19), .access_cb = hid_access, .arg = HID_ARG(BAS_LEVEL),
+                 .val_handle = &s_batt_handle, .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY},
                 {0},
             },
     },
@@ -98,6 +220,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         ESP_LOGI(TAG, "disconnected (reason %d)", ev->disconnect.reason);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         s_tx_subscribed = false;
+        s_hid_subscribed = false;
         ams_on_disconnect();
         if (s_on_conn) {
             s_on_conn(false);
@@ -110,6 +233,10 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (ev->subscribe.attr_handle == s_tx_handle) {
             s_tx_subscribed = ev->subscribe.cur_notify;
+        } else if (ev->subscribe.attr_handle == s_hid_report_handle) {
+            s_hid_subscribed = ev->subscribe.cur_notify;
+            ESP_LOGI(TAG, "HID report %s (Siri button %s)", s_hid_subscribed ? "subscribed" : "unsubscribed",
+                     s_hid_subscribed ? "ready" : "off");
         }
         break;
     case BLE_GAP_EVENT_ENC_CHANGE:
@@ -143,6 +270,13 @@ static void advertise(void)
     adv.uuids128 = &s_svc_uuid;
     adv.num_uuids128 = 1;
     adv.uuids128_is_complete = 1;
+    // Also a HID remote (the Siri button), so iOS lists and pairs it as an accessory.
+    static const ble_uuid16_t hid_uuid = BLE_UUID16_INIT(0x1812);
+    adv.uuids16 = &hid_uuid;
+    adv.num_uuids16 = 1;
+    adv.uuids16_is_complete = 1;
+    adv.appearance = 0x03C0; // generic HID
+    adv.appearance_is_present = 1;
     int rc = ble_gap_adv_set_fields(&adv);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv fields: %d", rc);
@@ -219,6 +353,54 @@ esp_err_t ble_link_init(ble_link_rx_cb_t on_rx, ble_link_conn_cb_t on_conn)
 
     nimble_port_freertos_init(host_task);
     return ESP_OK;
+}
+
+static esp_err_t hid_report(uint8_t v)
+{
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(&v, 1);
+    if (!om) {
+        return ESP_ERR_NO_MEM;
+    }
+    return ble_gatts_notify_custom(s_conn, s_hid_report_handle, om) == 0 ? ESP_OK : ESP_FAIL;
+}
+
+static esp_timer_handle_t s_release_timer;
+
+static void hid_release(void *arg)
+{
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE && s_hid_subscribed) {
+        hid_report(0);
+    }
+}
+
+esp_err_t ble_link_voice_command(void)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_hid_subscribed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_release_timer) {
+        const esp_timer_create_args_t args = {.callback = hid_release, .name = "hid_release"};
+        if (esp_timer_create(&args, &s_release_timer) != ESP_OK) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (esp_timer_is_active(s_release_timer)) {
+        return ESP_OK; // already held
+    }
+    esp_err_t err = hid_report(HID_BIT_VOICE);
+    esp_timer_start_once(s_release_timer, HID_VOICE_HOLD_US); // release even if the press failed: never stick down
+    return err;
+}
+
+void ble_link_set_battery(uint8_t pct)
+{
+    if (pct > 100 || pct == s_batt_pct) {
+        return;
+    }
+    s_batt_pct = pct;
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gatts_chr_updated(s_batt_handle);
+    }
 }
 
 bool ble_link_connected(void)

@@ -26,3 +26,10 @@ ${CC:-gcc} -std=c11 -Wall -Wextra -Werror -O1 -g \
     "$here/obd_parse_test.c" \
     -o "$out/obd_parse_test"
 "$out/obd_parse_test"
+
+${CC:-gcc} -std=c11 -Wall -Wextra -Werror -O1 -g \
+    -I "$root/firmware/components/imu/include" \
+    "$root/firmware/components/imu/knock.c" \
+    "$here/knock_test.c" \
+    -lm -o "$out/knock_test"
+"$out/knock_test"

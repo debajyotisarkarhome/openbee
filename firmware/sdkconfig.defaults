@@ -7,6 +7,9 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 # 80 MHz: the frame buffers and swipe snapshots live in PSRAM (board.c, ui.c)
 CONFIG_SPIRAM_SPEED_80M=y
+# Lets big static buffers (street sets, the phone-frame copy) sit in PSRAM via EXT_RAM_BSS_ATTR, keeping internal
+# RAM for DMA and the BLE stack.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 

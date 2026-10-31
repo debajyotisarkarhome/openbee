@@ -60,6 +60,13 @@ static int dump(const proto_msg_t *m, char *o, size_t cap)
     case MSG_STATE:
         P("type=STATE\nstate=%u\n", m->u.state);
         break;
+    case MSG_LAYOUT:
+        P("type=LAYOUT\nn=%u\npages=", m->u.layout.n);
+        for (int i = 0; i < m->u.layout.n; i++) {
+            P(i ? ",%u" : "%u", m->u.layout.pages[i]);
+        }
+        P("\n");
+        break;
     case MSG_ROADS: {
         const roads_msg_t *v = &m->u.roads;
         P("type=ROADS\nanchor_id=%u\npart=%u/%u\nn=%u\n", v->anchor_id, v->part, v->parts, v->nroads);
@@ -166,6 +173,14 @@ static void test_malformed(void)
     memset(media_bad + k, 'b', 65); k += 65;
     media_bad[2] = (uint8_t)(k - 4);
     CHECK(!proto_decode(media_bad, k, &m));
+
+    // LAYOUT: more than 8 pages, or fewer page bytes than n, is malformed.
+    static const uint8_t layout_many[] = {1, MSG_LAYOUT, 10, 0, 9, 0, 1, 2, 3, 4, 0, 1, 2};
+    CHECK(!proto_decode(layout_many, sizeof layout_many, &m));
+    static const uint8_t layout_short[] = {1, MSG_LAYOUT, 3, 0, 3, 0, 1};
+    CHECK(!proto_decode(layout_short, sizeof layout_short, &m));
+    static const uint8_t layout_empty[] = {1, MSG_LAYOUT, 1, 0, 0};
+    CHECK(proto_decode(layout_empty, sizeof layout_empty, &m) && m.u.layout.n == 0);
 }
 
 static void test_dev_status_encode(const char *dir)

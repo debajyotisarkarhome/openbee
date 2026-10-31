@@ -150,6 +150,17 @@ bool proto_decode(const uint8_t *frame, size_t len, proto_msg_t *out)
         rd_str_max(&r, m->artist, PROTO_MEDIA_ARTIST_MAX);
         break;
     }
+    case MSG_LAYOUT: {
+        layout_msg_t *m = &out->u.layout;
+        m->n = rd_u8(&r);
+        if (m->n > PROTO_MAX_LAYOUT_PAGES) {
+            return false;
+        }
+        for (int i = 0; i < m->n; i++) {
+            m->pages[i] = rd_u8(&r);
+        }
+        break;
+    }
     case MSG_MEDIA_CMD:
         out->u.media_cmd = rd_u8(&r);
         break;

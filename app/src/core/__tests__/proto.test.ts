@@ -1,8 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CurveClass, Maneuver, MAX_PAYLOAD, MediaCmd, MediaState, MsgType, NotifKind,
-  decode, dump, encodeMedia, encodeMediaCmd, encodeNav, encodeNotif, encodeTrip, utf8Truncate,
+  CurveClass, Maneuver, MAX_PAYLOAD, MediaCmd, MediaState, MsgType, NotifKind, Page,
+  decode, dump, encodeLayout, encodeMedia, encodeMediaCmd, encodeNav, encodeNotif, encodeTrip, utf8Truncate,
 } from '../proto';
 
 const VEC = join(__dirname, '..', '..', '..', '..', 'proto-vectors');
@@ -88,6 +88,17 @@ describe('proto', () => {
       if (d.type !== MsgType.MEDIA_CMD) throw new Error();
       expect(d.msg.cmd).toBe(c);
     }
+  });
+
+  it('LAYOUT round-trips and caps at 8 pages', () => {
+    const pages = [Page.STATUS, Page.NAV, Page.MEDIA];
+    const d = decode(encodeLayout({ pages }));
+    if (d.type !== MsgType.LAYOUT) throw new Error();
+    expect(d.msg.pages).toEqual(pages);
+    const many = decode(encodeLayout({ pages: Array.from({ length: 12 }, (_, i) => i % 5) }));
+    if (many.type !== MsgType.LAYOUT) throw new Error();
+    expect(many.msg.pages).toHaveLength(8);
+    expect(() => decode(Uint8Array.of(1, MsgType.LAYOUT, 2, 0, 9, 0))).toThrow();
   });
 
   it('rejects malformed frames', () => {

@@ -8,8 +8,10 @@
 #include "ble_link.h"
 #include "board.h"
 #include "demo.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "imu.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "nvs_flash.h"
@@ -26,6 +28,7 @@ static const char *TAG = "main";
 #define RX_QUEUE_LEN 40 // a full 32-part ROADS set plus NAV/TRIP, even if one render is in progress (~10 KB)
 #define NVS_NS "openbee"
 #define NVS_KEY_BRIGHTNESS "bright"
+#define NVS_KEY_LAYOUT "layout"
 #define BRIGHTNESS_DEFAULT 80
 #define BRIGHTNESS_SAVE_DELAY_MS 1000 // save once the rider stops adjusting, not on every drag step
 
@@ -43,9 +46,68 @@ static atomic_uint s_brightness_changed_tick; // 0 = saved
 static portMUX_TYPE s_ams_media_lock = portMUX_INITIALIZER_UNLOCKED;
 static media_msg_t s_ams_media; // guarded by s_ams_media_lock
 static atomic_bool s_ams_media_changed;
+// The phone's latest picture, kept while demo hides it, so leaving demo can put it straight back: the phone
+// sends STATE only on change and ROADS only per ~300 m anchor, so waiting for fresh ones could take minutes.
+// Main task only. ~9 KB (a full 32-part street set), so it lives in PSRAM.
+EXT_RAM_BSS_ATTR static struct {
+    bool have_state, have_nav, have_trip;
+    frame_t state, nav, trip;
+    uint8_t roads_anchor;
+    uint8_t nroads;
+    frame_t roads[32];
+} s_phone;
+
+static void remember_phone_frame(const frame_t *f, const proto_msg_t *msg)
+{
+    switch (msg->type) {
+    case MSG_STATE:
+        s_phone.state = *f;
+        s_phone.have_state = true;
+        break;
+    case MSG_NAV:
+        s_phone.nav = *f;
+        s_phone.have_nav = true;
+        break;
+    case MSG_TRIP:
+        s_phone.trip = *f;
+        s_phone.have_trip = true;
+        break;
+    case MSG_ROADS:
+        if (msg->u.roads.anchor_id != s_phone.roads_anchor) {
+            s_phone.roads_anchor = msg->u.roads.anchor_id;
+            s_phone.nroads = 0;
+        }
+        if (s_phone.nroads < sizeof s_phone.roads / sizeof s_phone.roads[0]) {
+            s_phone.roads[s_phone.nroads++] = *f; // duplicates are harmless: apply_roads ignores repeated parts
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/** Re-apply the phone's latest frames, streets before the NAV that refers to them (as the phone sends them). */
+static void replay_phone(void)
+{
+    static proto_msg_t msg; // static: proto_msg_t is ~750 bytes
+    for (int i = 0; i < s_phone.nroads; i++) {
+        if (proto_decode(s_phone.roads[i].data, s_phone.roads[i].len, &msg)) {
+            ui_apply(&msg);
+        }
+    }
+    const frame_t *rest[] = {s_phone.have_state ? &s_phone.state : NULL, s_phone.have_trip ? &s_phone.trip : NULL,
+                             s_phone.have_nav ? &s_phone.nav : NULL};
+    for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) {
+        if (rest[i] && proto_decode(rest[i]->data, rest[i]->len, &msg)) {
+            ui_apply(&msg);
+        }
+    }
+}
+
 static portMUX_TYPE s_obd_lock = portMUX_INITIALIZER_UNLOCKED;
 static obd_data_t s_obd; // guarded by s_obd_lock
 static atomic_bool s_obd_changed;
+static atomic_bool s_knock;
 
 static void on_rx(const uint8_t *data, size_t len)
 {
@@ -81,6 +143,30 @@ static void ams_media_cb(const media_msg_t *m)
     s_ams_media = *m;
     portEXIT_CRITICAL(&s_ams_media_lock);
     atomic_store(&s_ams_media_changed, true);
+}
+
+static void knock_cb(void)
+{
+    atomic_store(&s_knock, true); // IMU task: flag only
+}
+
+/** Double knock: open Siri on the iPhone (HID Voice Command), and say on screen whether that worked. */
+static void siri(void)
+{
+    esp_err_t err = ble_link_voice_command();
+    ESP_LOGI(TAG, "double knock: Siri %s", esp_err_to_name(err));
+    static proto_msg_t m = {.type = MSG_NOTIF}; // static: proto_msg_t is ~750 bytes
+    m.u.notif.kind = NOTIF_OTHER;
+    strcpy(m.u.notif.app, "Siri");
+    if (err == ESP_OK) {
+        strcpy(m.u.notif.title, "Listening...");
+        m.u.notif.body[0] = '\0';
+    } else {
+        strcpy(m.u.notif.title, "Siri unavailable");
+        strcpy(m.u.notif.body, ble_link_connected() ? "Re-pair the display in iPhone Bluetooth settings"
+                                                    : "Connect your iPhone");
+    }
+    ui_apply(&m);
 }
 
 static void obd_cb(const obd_data_t *d)
@@ -182,6 +268,38 @@ static void brightness_save_if_settled(TickType_t now)
     nvs_close(h);
 }
 
+/** The page layout the app last sent, so the device comes up with it even before (or without) a phone. */
+static void layout_restore(void)
+{
+    nvs_handle_t h;
+    uint8_t pages[PROTO_MAX_LAYOUT_PAGES];
+    size_t n = sizeof pages;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return; // first boot: keep the default layout
+    }
+    if (nvs_get_blob(h, NVS_KEY_LAYOUT, pages, &n) == ESP_OK) {
+        ui_set_layout(pages, (uint8_t)n);
+    }
+    nvs_close(h);
+}
+
+static void layout_save(const layout_msg_t *m)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "nvs open failed; layout not saved");
+        return;
+    }
+    // Sent once per connect and on change: skip the flash write when nothing changed.
+    uint8_t old[PROTO_MAX_LAYOUT_PAGES];
+    size_t n = sizeof old;
+    if (nvs_get_blob(h, NVS_KEY_LAYOUT, old, &n) != ESP_OK || n != m->n || memcmp(old, m->pages, n) != 0) {
+        nvs_set_blob(h, NVS_KEY_LAYOUT, m->pages, m->n);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
 static uint32_t now_s(void)
 {
     struct timeval tv;
@@ -207,6 +325,9 @@ static void report_battery(void)
     uint16_t mv = board_battery_mv();
     uint8_t pct = board_battery_pct(mv);
     ui_set_device_battery(pct, mv);
+    if (mv) {
+        ble_link_set_battery(pct);
+    }
     // Charging can't be read directly on this board; ≥4.25 V means USB is feeding the charger.
     dev_status_msg_t st = {.batt_pct = pct, .batt_mv = mv, .charging = mv >= 4250, .fw_ver = FW_VERSION};
     uint8_t buf[16];
@@ -238,9 +359,13 @@ void app_main(void)
     char name[16];
     snprintf(name, sizeof name, "OpenBee-%02X%02X", mac[4], mac[5]);
     ui_init(disp, name, on_demo_toggle, brightness, on_brightness, on_media_cmd);
+    layout_restore();
     ams_init(ams_media_cb);
     obd_init(obd_cb); // before ble_link_init: the host's sync callback starts the OBD scan
     ESP_ERROR_CHECK(ble_link_init(on_rx, on_conn));
+    if (imu_init(board_i2c_bus(), knock_cb) != ESP_OK) {
+        ESP_LOGW(TAG, "IMU not found: no double-knock Siri");
+    }
 
 #ifdef CONFIG_OPENBEE_DEMO_MODE
     bool demo = true;
@@ -266,7 +391,13 @@ void app_main(void)
             do {
                 if (!proto_decode(f.data, f.len, &msg)) {
                     ESP_LOGW(TAG, "bad frame (%u bytes, type 0x%02x)", f.len, f.len > 1 ? f.data[1] : 0);
-                } else if (!demo || msg.type == MSG_NOTIF || msg.type == MSG_MEDIA) {
+                    continue;
+                }
+                remember_phone_frame(&f, &msg);
+                if (msg.type == MSG_LAYOUT) {
+                    layout_save(&msg.u.layout);
+                }
+                if (!demo || msg.type == MSG_NOTIF || msg.type == MSG_MEDIA || msg.type == MSG_LAYOUT) {
                     ui_apply(&msg);
                 }
             } while (xQueueReceive(s_rx_q, &f, 0) == pdTRUE);
@@ -278,6 +409,7 @@ void app_main(void)
             if (ble_link_connected()) {
                 report_battery();
             } else {
+                memset(&s_phone, 0, sizeof s_phone); // a reconnecting phone replays everything itself
                 // The phone is gone, so its now-playing is stale. (Task 5's AMS source clears itself.)
                 static proto_msg_t none = {.type = MSG_MEDIA, .u.media = {.state = MEDIA_NONE, .volume_pct = PROTO_UNKNOWN_VOLUME}};
                 ui_apply(&none);
@@ -297,6 +429,10 @@ void app_main(void)
             media_route((uint8_t)(media_cmd - 1));
         }
 
+        if (atomic_exchange(&s_knock, false)) {
+            siri();
+        }
+
         if (atomic_exchange(&s_obd_changed, false) && !demo) {
             apply_obd();
         }
@@ -305,10 +441,15 @@ void app_main(void)
             demo = !demo;
             if (demo) {
                 demo_start();
+                ui_set_demo(true);
             } else {
-                apply_obd(); // back to the real adapter's state
+                // Wipe what demo drew, then put back the phone's ride and the adapter's numbers in one go.
+                ui_lock();
+                ui_set_demo(false);
+                replay_phone();
+                apply_obd();
+                ui_unlock();
             }
-            ui_set_demo(demo);
             ESP_LOGI(TAG, "demo mode %s", demo ? "on" : "off");
         }
 

@@ -35,6 +35,7 @@ match the bytes received.
 | `0x04` | `STATE`      | phone → device | on change, plus once on connect       |
 | `0x05` | `ROADS`      | phone → device | per anchor: when the rider is 300 m from the last one, plus on connect |
 | `0x06` | `MEDIA`      | phone → device | on change, plus once on connect       |
+| `0x07` | `LAYOUT`     | phone → device | on change, plus once on connect       |
 | `0x81` | `DEV_STATUS` | device → phone | every 10 s, plus once on subscribe    |
 | `0x82` | `MEDIA_CMD`  | device → phone | on button press                       |
 
@@ -164,6 +165,27 @@ when the link is congested; it drops stale `NAV` frames instead.
 | 1+…  | `artist`     | len u8 + bytes (≤ 64)                           |
 
 Strings are truncated by the sender on a UTF-8 code-point boundary.
+
+## `LAYOUT` (0x07)
+
+Which pages the display shows, and their swipe order (left to right).
+
+| Size | Field     | Notes                                       |
+|------|-----------|---------------------------------------------|
+| 1    | `n`       | number of pages, 1–8                        |
+| n    | `pages[]` | page ids, enabled pages only, in swipe order |
+
+| id | Page     |
+|----|----------|
+| 0  | Nav      |
+| 1  | Engine   |
+| 2  | Media    |
+| 3  | Status   |
+| 4  | Settings |
+
+Nav is the home page (tapping Engine or Status returns to it), so it is always shown: if `pages` lacks it, the
+device puts it first. The device ignores unknown ids and repeats, and keeps the last layout across restarts,
+so it holds without a phone. `n` > 8 is malformed.
 
 ## `DEV_STATUS` (0x81)
 

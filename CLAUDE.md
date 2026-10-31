@@ -133,7 +133,9 @@ under congestion — stale NAV frames are dropped instead.
 
 `firmware/components/ui/ui.c` is the source of truth (LVGL tileview: Nav / Engine / Media / Status / Settings, plus state
 banner and notification overlay; all `ui_*` functions take the LVGL port lock internally so they're
-callable from any task). `app/sim/display.ts` is a hand-maintained canvas port — same coordinates,
+callable from any task). Which pages show and their swipe order come from the app's `LAYOUT` frame
+(`apply_layout()` repositions the existing tiles, it doesn't rebuild them; the device keeps the last layout in
+NVS; Nav is always shown). `app/sim/display.ts` is a hand-maintained canvas port — same coordinates,
 colors, auto-zoom, arrow geometry — and `app/src/ui/RoadShape.tsx` draws a simpler in-app version.
 A change to the on-screen layout or palette in `ui.c` should be mirrored into `display.ts`.
 
@@ -146,6 +148,16 @@ The one deliberate exception to "the phone does the work": `components/obd` make
 battery) and hands an `obd_data_t` to `main.c`, which maps it to `ui_engine_t` for the Engine page. Engine
 data never touches the phone protocol. `obd_parse.c` is pure C with a host test (`obd_parse_test.c`) built
 from a real adapter's replies. Classic-Bluetooth (SPP) ELM327s can't work: the ESP32-S3 has no BR/EDR.
+
+### Double knock → Siri
+
+`components/imu` polls the QMI8658 (shared I2C bus with touch) at ~1 kHz; the accelerometer runs at ~897 Hz
+with its low-pass off, because a knuckle knock rings out in a few ms and 224 Hz sampling missed its peak.
+`knock.c` (pure C, `knock_test.c`) wants two short spikes 120–500 ms apart after a calm spell, and no third.
+A double knock makes the device press a **BLE HID** consumer button: `ble_link.c` also exposes HID-over-GATT
+(+ Device Information, Battery). iOS opens Siri for Voice Command (0xCF) only if it's **held** (1.5 s; an
+80 ms tap was ignored). iOS caches the report map per bond: **changing `HID_REPORT_MAP` means every user has
+to forget and re-pair the display**, so it keeps the unused Play/Pause and AC Search bits from that experiment.
 
 ### Firmware main loop
 

@@ -53,6 +53,12 @@ void ui_set_engine(const ui_engine_t *e);
 
 void ui_set_connected(bool connected);
 void ui_set_device_battery(uint8_t pct, uint16_t mv);
+/** Pages to show, in swipe order (LAYOUT page ids). Unknown ids and repeats are skipped; Nav is added first if
+ *  missing. The active page stays put if still shown, otherwise the view returns to Nav. */
+void ui_set_layout(const uint8_t *pages, uint8_t n);
+
+/** Demo on/off. Turning it off also wipes everything demo drew (ride, streets, trip, RPM gauge scale), so the
+ *  caller should replay the phone's latest frames afterwards. */
 void ui_set_demo(bool on);
 
 #ifdef __cplusplus

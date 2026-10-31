@@ -7,9 +7,11 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "src/core/lv_obj_event_private.h" // lv_hit_test_info_t, for the brightness knob's custom hit test
+#include "src/widgets/tileview/lv_tileview_private.h" // lv_tileview_tile_t.dir, rewritten by apply_layout
 
 #define W 240
 #define H 240
@@ -185,7 +187,8 @@ typedef struct {
     road_point_t pts[MAP_MAX_PTS];
 } road_set_t;
 
-static road_set_t s_roads[2];
+// Big street buffers live in PSRAM (EXT_RAM_BSS_ATTR): internal RAM is needed for DMA and the BLE stack.
+EXT_RAM_BSS_ATTR static road_set_t s_roads[2];
 static road_set_t *s_shown = &s_roads[0];   // drawn
 static road_set_t *s_pending = &s_roads[1]; // being received
 
@@ -193,8 +196,8 @@ static road_set_t *s_pending = &s_roads[1]; // being received
 typedef struct {
     int16_t x1, y1, x2, y2;
 } box16_t;
-static lv_point_precise_t s_street_px[MAP_MAX_PTS];
-static box16_t s_street_box[MAP_MAX_ROADS];
+EXT_RAM_BSS_ATTR static lv_point_precise_t s_street_px[MAP_MAX_PTS];
+EXT_RAM_BSS_ATTR static box16_t s_street_box[MAP_MAX_ROADS];
 static bool s_streets_valid;
 
 // ---------- helpers ----------
@@ -537,7 +540,7 @@ static void map_draw_cb(lv_event_t *e)
 
 static void back_to_nav(lv_event_t *e)
 {
-    lv_tileview_set_tile_by_index(s.tv, 0, 0, LV_ANIM_ON);
+    lv_tileview_set_tile(s.tv, s.tile_nav, LV_ANIM_ON); // Nav's column depends on the layout
 }
 
 static void demo_long_press(lv_event_t *e)
@@ -1454,10 +1457,12 @@ static void refresh_banner(void)
 // those; the live widgets are skipped (opa 0) until it settles. Costs one ~40 ms frame at the start, and the
 // map stands still for the swipe. Without PSRAM it just stays live.
 
-#define TILE_COUNT 5
+#define TILE_COUNT PAGE_COUNT
 #define SNAP_BUFS 3 // the active tile and both neighbours
-static lv_obj_t *s_tiles[TILE_COUNT];
-static lv_obj_t *s_snap_img[TILE_COUNT]; // per tile, hidden unless a swipe is showing it
+static lv_obj_t *s_tiles[TILE_COUNT];    // by page id (PAGE_*)
+static lv_obj_t *s_snap_img[TILE_COUNT]; // by page id; hidden unless a swipe is showing it
+static uint8_t s_order[TILE_COUNT];      // shown pages, left to right (apply_layout)
+static int s_norder;
 static lv_draw_buf_t s_snap_buf[SNAP_BUFS];
 static bool s_snap_ready, s_snapping;
 static lv_timer_t *s_snap_timer;
@@ -1485,16 +1490,17 @@ static void swipe_begin(void)
     if (!s_snap_ready || s_snapping) {
         return;
     }
+    // Neighbours in the shown order, not by page id: a swipe slides between columns of the current layout.
     int act = 0;
-    for (int i = 0; i < TILE_COUNT; i++) {
-        if (s_tiles[i] == lv_tileview_get_tile_active(s.tv)) {
-            act = i;
+    for (int k = 0; k < s_norder; k++) {
+        if (s_tiles[s_order[k]] == lv_tileview_get_tile_active(s.tv)) {
+            act = k;
         }
     }
     int b = 0;
-    for (int i = act - 1; i <= act + 1; i++) {
-        if (i < 0 || i >= TILE_COUNT ||
-            lv_snapshot_take_to_draw_buf(s_tiles[i], LV_COLOR_FORMAT_RGB565, &s_snap_buf[b]) != LV_RESULT_OK) {
+    for (int k = act - 1; k <= act + 1; k++) {
+        int i = k >= 0 && k < s_norder ? s_order[k] : -1;
+        if (i < 0 || lv_snapshot_take_to_draw_buf(s_tiles[i], LV_COLOR_FORMAT_RGB565, &s_snap_buf[b]) != LV_RESULT_OK) {
             continue;
         }
         lv_image_set_src(s_snap_img[i], &s_snap_buf[b++]);
@@ -1534,7 +1540,6 @@ static void tv_scroll_begin(lv_event_t *e)
 
 static void init_swipe_snapshots(void)
 {
-    lv_obj_t *tiles[TILE_COUNT] = {s.tile_nav, s.tile_engine, s.tile_media, s.tile_status, s.tile_settings};
     uint32_t size = LV_DRAW_BUF_SIZE(W, H, LV_COLOR_FORMAT_RGB565);
     for (int b = 0; b < SNAP_BUFS; b++) {
         void *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
@@ -1544,8 +1549,7 @@ static void init_swipe_snapshots(void)
         }
     }
     for (int i = 0; i < TILE_COUNT; i++) {
-        s_tiles[i] = tiles[i];
-        s_snap_img[i] = lv_image_create(tiles[i]);
+        s_snap_img[i] = lv_image_create(s_tiles[i]);
         lv_obj_set_pos(s_snap_img[i], 0, 0);
         lv_obj_set_clickable(s_snap_img[i], false);
         lv_obj_set_hidden(s_snap_img[i], true);
@@ -1554,6 +1558,51 @@ static void init_swipe_snapshots(void)
     lv_timer_pause(s_snap_timer);
     lv_obj_add_event_cb(s.tv, tv_scroll_begin, LV_EVENT_SCROLL_BEGIN, NULL);
     s_snap_ready = true;
+}
+
+/**
+ * Lay the tileview out as `pages`: shown tiles side by side in row 0, each allowed to swipe only toward a
+ * neighbour; hidden ones parked in row 1, where no tile's directions can reach and the tileview's position match
+ * (on scroll end) never finds them. Tiles are moved, not rebuilt, so every page keeps its state.
+ */
+static void apply_layout(const uint8_t *pages, uint8_t n)
+{
+    bool shown[TILE_COUNT] = {0};
+    uint8_t order[TILE_COUNT];
+    int k = 0;
+    for (int i = 0; i < n && k < TILE_COUNT; i++) {
+        if (pages[i] < TILE_COUNT && !shown[pages[i]]) {
+            shown[pages[i]] = true;
+            order[k++] = pages[i];
+        }
+    }
+    if (!shown[PAGE_NAV]) { // the home page taps return to: always there
+        memmove(order + 1, order, k);
+        order[0] = PAGE_NAV;
+        shown[PAGE_NAV] = true;
+        k++;
+    }
+    for (int p = 0; p < TILE_COUNT; p++) {
+        lv_obj_set_hidden(s_tiles[p], !shown[p]);
+        if (!shown[p]) {
+            lv_obj_set_pos(s_tiles[p], p * W, H);
+            ((lv_tileview_tile_t *)s_tiles[p])->dir = LV_DIR_NONE;
+        }
+    }
+    for (int col = 0; col < k; col++) {
+        lv_obj_set_pos(s_tiles[order[col]], col * W, 0);
+        ((lv_tileview_tile_t *)s_tiles[order[col]])->dir =
+            (col > 0 ? LV_DIR_LEFT : LV_DIR_NONE) | (col < k - 1 ? LV_DIR_RIGHT : LV_DIR_NONE);
+    }
+    memcpy(s_order, order, k);
+    s_norder = k;
+
+    lv_obj_t *act = lv_tileview_get_tile_active(s.tv);
+    if (!act || lv_obj_is_hidden(act)) {
+        act = s.tile_nav;
+    }
+    lv_tileview_set_tile(s.tv, act, LV_ANIM_OFF); // re-snaps the scroll and reloads its swipe directions
+    refresh_banner();
 }
 
 // Runs in the LVGL task (port lock held).
@@ -1827,6 +1876,11 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     s.tile_media = lv_tileview_add_tile(s.tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     s.tile_status = lv_tileview_add_tile(s.tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     s.tile_settings = lv_tileview_add_tile(s.tv, 4, 0, LV_DIR_LEFT);
+    s_tiles[PAGE_NAV] = s.tile_nav;
+    s_tiles[PAGE_ENGINE] = s.tile_engine;
+    s_tiles[PAGE_MEDIA] = s.tile_media;
+    s_tiles[PAGE_STATUS] = s.tile_status;
+    s_tiles[PAGE_SETTINGS] = s.tile_settings;
     build_nav(s.tile_nav);
     build_engine(s.tile_engine);
     apply_engine(&(ui_engine_t){.link = UI_ENGINE_SEARCHING,
@@ -1845,6 +1899,8 @@ void ui_init(lv_display_t *disp, const char *device_name, ui_demo_toggle_cb_t on
     build_overlays();
     lv_obj_add_event_cb(s.tv, tile_changed, LV_EVENT_VALUE_CHANGED, NULL);
     init_swipe_snapshots();
+    static const uint8_t all[] = {PAGE_NAV, PAGE_ENGINE, PAGE_MEDIA, PAGE_STATUS, PAGE_SETTINGS};
+    apply_layout(all, sizeof all);
     lv_timer_create(clock_tick, 1000, NULL);
     lv_timer_create(anim_tick, ANIM_PERIOD_MS, NULL);
 
@@ -1876,6 +1932,9 @@ void ui_apply(const proto_msg_t *msg)
     case MSG_MEDIA:
         apply_media(&msg->u.media);
         break;
+    case MSG_LAYOUT:
+        apply_layout(msg->u.layout.pages, msg->u.layout.n);
+        break;
     default:
         break;
     }
@@ -1901,6 +1960,13 @@ void ui_set_connected(bool connected)
     lvgl_port_unlock();
 }
 
+void ui_set_layout(const uint8_t *pages, uint8_t n)
+{
+    lvgl_port_lock(0);
+    apply_layout(pages, n);
+    lvgl_port_unlock();
+}
+
 void ui_set_engine(const ui_engine_t *e)
 {
     lvgl_port_lock(0);
@@ -1918,9 +1984,33 @@ void ui_set_device_battery(uint8_t pct, uint16_t mv)
     lvgl_port_unlock();
 }
 
+/** Forget the demo ride: what's left is whatever the phone sends (or replays) next. */
+static void clear_demo_leftovers(void)
+{
+    s.nav_state = NAV_IDLE;
+    s.have_nav = false;
+    s.have_trip = false;
+    // Demo streets are anchor 1, an id the phone may use too: drop both sets so none are drawn under a real ride.
+    memset(&s_roads[0], 0, offsetof(road_set_t, start));
+    memset(&s_roads[1], 0, offsetof(road_set_t, start));
+    s_streets_valid = false;
+    s_view_anchor = 0;
+    s_anim_on = false;
+    lv_obj_set_hidden(s.curve_lbl, true);
+    lv_obj_set_hidden(s.limit_ring, true);
+    lv_label_set_text(s.speed_lbl, "");
+    // The fake RPM may have grown the gauge past this vehicle's range.
+    s.eng_rpm_max = ((const int32_t[])ENG_RPM_STEPS)[0];
+    lv_arc_set_range(s.eng_arc, 0, s.eng_rpm_max);
+    lv_obj_invalidate(s.map);
+}
+
 void ui_set_demo(bool on)
 {
     lvgl_port_lock(0);
+    if (s.demo && !on) {
+        clear_demo_leftovers();
+    }
     s.demo = on;
     refresh_banner();
     refresh_status();

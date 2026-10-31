@@ -5,6 +5,7 @@ import { mediaPermission } from '../../services/media';
 import { SIM_SPEED_CHOICES, settings } from '../../services/settings';
 import { Card, Divider, Row, ScreenTitle, SectionLabel, SegmentedControl, ToggleRow } from '../../ui/components';
 import { useSettings } from '../../ui/hooks';
+import { PageList } from '../../ui/PageList';
 import { colors, layout, speedLabel, toSpeed } from '../../ui/theme';
 
 export default function SettingsScreen() {
@@ -14,6 +15,17 @@ export default function SettingsScreen() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <ScreenTitle>Settings</ScreenTitle>
+
+      <View>
+        <SectionLabel icon="albums-outline">Display pages</SectionLabel>
+        <View style={styles.pad}>
+          <PageList pages={s.pages} onChange={(p) => settings.set('pages', p)} />
+          <Text style={styles.hint}>
+            Order and visibility of the swipeable pages on the handlebar display. Changes apply right away and the
+            display remembers them.
+          </Text>
+        </View>
+      </View>
 
       <View>
         <SectionLabel icon="speedometer-outline">Units</SectionLabel>

@@ -14,6 +14,8 @@
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
+#include "src/display/lv_display_private.h" // lv_display_t.flushing, for the flush watchdog
 #include "sdkconfig.h"
 
 static const char *TAG = "board";
@@ -23,11 +25,16 @@ static const char *TAG = "board";
 // Whole frames, rendered in PSRAM: drawing in strips sent each strip to the panel ~7 ms apart, so a moving
 // page sheared into bands that visibly slid at different times. A full frame reaches the panel in one sweep.
 // DMA can't read PSRAM fast enough while the CPU renders (TX underflow), so the SPI driver copies each chunk
-// into an internal DMA buffer; queue depth × chunk bounds that internal RAM (~58 KB).
-#define LCD_CHUNK_LINES 40
+// into an internal DMA buffer it allocates per transfer; queue depth × chunk bounds that RAM (~29 KB). The chunk
+// is small on purpose: internal RAM is shared with two BLE links, and 40-line (19 KB) chunks sometimes found no
+// block that large free, which froze the screen (see flush_watchdog_cb). The frame still goes out in one sweep.
+#define LCD_CHUNK_LINES 20
 #define LCD_TRANS_QUEUE_DEPTH 3
 #define BL_LEDC_CHANNEL LEDC_CHANNEL_0
 
+#define FLUSH_STUCK_US 200000 // a whole frame takes ~15 ms over SPI; 200 ms means it was never sent
+
+static i2c_master_bus_handle_t s_i2c_bus; // touch + IMU
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_adc_cali;
 static adc_channel_t s_adc_chan;
@@ -59,6 +66,37 @@ void board_backlight_set(uint8_t percent)
     }
     ledc_set_duty(LEDC_LOW_SPEED_MODE, BL_LEDC_CHANNEL, (1023 * percent) / 100);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, BL_LEDC_CHANNEL);
+}
+
+// Flush watchdog. With an SPI panel, esp_lvgl_port marks a flush done only from the transfer-complete interrupt,
+// and ignores esp_lcd_panel_draw_bitmap's result. If the SPI driver can't allocate its internal bounce buffer, no
+// transfer starts, nothing completes, and LVGL spins on disp->flushing forever: a frozen screen. So if a flush is
+// still pending long after it started, release it. Worst case is one torn frame instead of a dead display.
+static lv_display_t *s_disp;
+static volatile uint32_t s_flush_seq;     // bumped on every flush start (LVGL task)
+static volatile int64_t s_flush_start_us;
+
+static void flush_started(lv_event_t *e)
+{
+    s_flush_start_us = esp_timer_get_time();
+    s_flush_seq++;
+}
+
+static void flush_watchdog_cb(void *arg)
+{
+    static uint32_t warned_seq;
+    uint32_t seq = s_flush_seq;
+    if (!s_disp || !s_disp->flushing || esp_timer_get_time() - s_flush_start_us < FLUSH_STUCK_US || seq == warned_seq) {
+        return;
+    }
+    warned_seq = seq; // once per stuck flush
+    ESP_LOGW(TAG, "display flush never completed (SPI transfer not started?); releasing it");
+    lv_display_flush_ready(s_disp);
+}
+
+i2c_master_bus_handle_t board_i2c_bus(void)
+{
+    return s_i2c_bus;
 }
 
 lv_display_t *board_display_init(void)
@@ -110,6 +148,7 @@ lv_display_t *board_display_init(void)
         .flags.enable_internal_pullup = true,
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_cfg, &i2c_bus));
+    s_i2c_bus = i2c_bus;
 
     esp_lcd_panel_io_handle_t tp_io = NULL;
     esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
@@ -144,6 +183,12 @@ lv_display_t *board_display_init(void)
         .flags = {.buff_spiram = true, .swap_bytes = true},
     };
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
+    s_disp = disp;
+    lv_display_add_event_cb(disp, flush_started, LV_EVENT_FLUSH_START, NULL);
+    const esp_timer_create_args_t wd_args = {.callback = flush_watchdog_cb, .name = "flush_wd"};
+    esp_timer_handle_t wd;
+    ESP_ERROR_CHECK(esp_timer_create(&wd_args, &wd));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(wd, FLUSH_STUCK_US / 2));
 
     const lvgl_port_touch_cfg_t touch_cfg = {.disp = disp, .handle = tp};
     lvgl_port_add_touch(&touch_cfg);

@@ -23,6 +23,16 @@ bool ble_link_connected(void);
 /** Notify one frame on TX if a central is subscribed. */
 esp_err_t ble_link_send(const uint8_t *data, size_t len);
 
+/**
+ * Hold the HID "Voice Command" button (Consumer page 0xCF) for 1.5 s, which opens Siri on an iPhone (a quick tap
+ * is ignored by iOS). Returns at once; a timer releases it. INVALID_STATE until the phone has subscribed to the
+ * HID report, i.e. it's paired and iOS took the device as a remote.
+ */
+esp_err_t ble_link_voice_command(void);
+
+/** Battery level for the Battery service (shown in the iPhone's battery widget). */
+void ble_link_set_battery(uint8_t pct);
+
 #ifdef __cplusplus
 }
 #endif
